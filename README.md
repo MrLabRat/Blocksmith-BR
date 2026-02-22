@@ -63,8 +63,7 @@ Blocksmith is a desktop application that helps you organize, import, and manage 
 
 ### From Release
 1. Download the latest release from the [Releases](https://github.com/MrLabRat/Blocksmith-BR/releases) page
-2. Run the installer (`.msi`) or extract the portable version
-3. Launch Blocksmith
+2. Launch Blocksmith by opening `Blocksmith.exe`
 
 ### From Source
 ```bash
@@ -182,7 +181,7 @@ This project is provided as-is for the Minecraft Bedrock community.
 - Built with [Tauri](https://tauri.app/)
 - Icons by [Lucide](https://lucide.dev/)
 - Minecraft font from [CDNFonts](https://fonts.cdnfonts.com/)
-- 4D Skin support powered by [SkinMaster](https://github.com/MrLabRat/Blocksmith-BR)
+- 4D Skin support powered by [SkinMaster] (Credits: xGG9 - RX Studio)
 
 ---
 
