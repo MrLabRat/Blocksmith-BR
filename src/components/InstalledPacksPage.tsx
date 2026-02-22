@@ -38,14 +38,15 @@ const packTypeLabels: Record<string, string> = {
 };
 
 
-const InstalledPackIcon = memo(function InstalledPackIcon({ pack }: { pack: PackInfo }) {
+const InstalledPackIcon = memo(function InstalledPackIcon({ pack, overrideIcon }: { pack: PackInfo; overrideIcon?: string | null }) {
   const IconComponent = getIconForPackType(pack.pack_type);
   const color = PackTypeColors[pack.pack_type];
+  const iconSrc = overrideIcon ?? pack.icon_base64;
   
-  if (pack.icon_base64) {
+  if (iconSrc) {
     return (
       <img 
-        src={pack.icon_base64}
+        src={iconSrc}
         alt={pack.name}
         className="pack-icon-img"
       />
@@ -55,6 +56,88 @@ const InstalledPackIcon = memo(function InstalledPackIcon({ pack }: { pack: Pack
   return (
     <div className="pack-icon-default" style={{ backgroundColor: `${color}20` }}>
       <IconComponent size={24} style={{ color }} />
+    </div>
+  );
+});
+
+/** Returns the best available icon from across all packs in a group. */
+function getBestGroupIcon(group: PackGroup): string | null {
+  const allPacks = [
+    group.mainPack,
+    ...group.worldTemplates,
+    ...group.resourcePacks,
+    ...group.skinPacks,
+    ...group.behaviorPacks,
+  ];
+  for (const p of allPacks) {
+    if (p.icon_base64) return p.icon_base64;
+  }
+  return null;
+}
+
+const PackGridCard = memo(function PackGridCard({
+  group,
+  packSizes,
+  onContextMenu,
+  onDelete,
+  isExpanded,
+  onToggleExpand,
+}: {
+  group: PackGroup;
+  packSizes: Record<string, { size: number; formatted: string }>;
+  onContextMenu: (e: React.MouseEvent, pack: PackInfo) => void;
+  onDelete: (pack: PackInfo) => void;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+}) {
+  const IconComponent = getIconForPackType(group.mainPack.pack_type);
+  const color = PackTypeColors[group.mainPack.pack_type];
+  const bestIcon = getBestGroupIcon(group);
+  const childPacks: PackInfo[] = [
+    ...group.worldTemplates.filter(wt => wt.path !== group.mainPack.path),
+    ...group.resourcePacks,
+    ...group.skinPacks,
+    ...group.behaviorPacks,
+  ];
+  const hasChildren = childPacks.length > 0;
+
+  return (
+    <div
+      className={`pack-grid-card${isExpanded ? ' grid-expanded' : ''}`}
+      onContextMenu={(e) => onContextMenu(e, group.mainPack)}
+      onClick={() => hasChildren && onToggleExpand()}
+      style={hasChildren ? { cursor: 'pointer' } : undefined}
+    >
+      {/* Square image — no wrapper div, aspect-ratio on the img itself */}
+      <div className="pack-grid-thumb">
+        {bestIcon
+          ? <img src={bestIcon} alt={group.displayName} className="pack-grid-thumb-img" />
+          : <div className="pack-grid-thumb-fallback" style={{ backgroundColor: `${color}22` }}>
+              <IconComponent style={{ color, width: '40%', height: '40%' }} />
+            </div>
+        }
+        {hasChildren && (
+          <span className="pack-grid-badge">+{childPacks.length}</span>
+        )}
+        <button
+          className="pack-grid-del"
+          onClick={(e) => { e.stopPropagation(); onDelete(group.mainPack); }}
+          title="Delete"
+        >
+          <Trash2 size={11} />
+        </button>
+      </div>
+
+      {/* Info strip */}
+      <div className="pack-grid-info">
+        <div className="pack-grid-name" title={group.displayName}>{group.displayName}</div>
+        <div className="pack-grid-sub">
+          <span style={{ color: PackTypeColors[group.mainPack.pack_type] || '#6b7280' }}>
+            {packTypeLabels[group.mainPack.pack_type]}
+          </span>
+          <span className="pack-grid-size">{packSizes[group.mainPack.path]?.formatted ?? ''}</span>
+        </div>
+      </div>
     </div>
   );
 });
@@ -78,6 +161,12 @@ const PackGroupItem = memo(function PackGroupItem({
   getBestDisplayName: (pack: PackInfo) => string;
   onDelete: (pack: PackInfo) => void;
 }) {
+  const groupIcon = getBestGroupIcon(group);
+
+  /** Renders a blurred background from an icon if one is available. */
+  const RowBg = ({ icon }: { icon?: string | null }) =>
+    icon ? <div className="pack-row-bg" style={{ backgroundImage: `url(${icon})` }} /> : null;
+
   return (
     <div className="pack-group">
       <div 
@@ -85,7 +174,8 @@ const PackGroupItem = memo(function PackGroupItem({
         onClick={() => hasChildren && onToggle()}
         onContextMenu={(e) => onContextMenu(e, group.mainPack)}
       >
-        <InstalledPackIcon pack={group.mainPack} />
+        <RowBg icon={groupIcon} />
+        <InstalledPackIcon pack={group.mainPack} overrideIcon={groupIcon} />
         <div className="pack-card-content">
           <div className="pack-card-name">
             {group.displayName}
@@ -132,6 +222,7 @@ const PackGroupItem = memo(function PackGroupItem({
               className="installed-pack-card child-pack"
               onContextMenu={(e) => onContextMenu(e, wt)}
             >
+              <RowBg icon={wt.icon_base64} />
               <InstalledPackIcon pack={wt} />
               <div className="pack-card-content">
                 <div className="pack-card-name">{getBestDisplayName(wt)}</div>
@@ -162,6 +253,7 @@ const PackGroupItem = memo(function PackGroupItem({
               className="installed-pack-card child-pack"
               onContextMenu={(e) => onContextMenu(e, bp)}
             >
+              <RowBg icon={bp.icon_base64} />
               <InstalledPackIcon pack={bp} />
               <div className="pack-card-content">
                 <div className="pack-card-name">{getBestDisplayName(bp)}</div>
@@ -192,6 +284,7 @@ const PackGroupItem = memo(function PackGroupItem({
               className="installed-pack-card child-pack"
               onContextMenu={(e) => onContextMenu(e, rp)}
             >
+              <RowBg icon={rp.icon_base64} />
               <InstalledPackIcon pack={rp} />
               <div className="pack-card-content">
                 <div className="pack-card-name">{getBestDisplayName(rp)}</div>
@@ -222,6 +315,7 @@ const PackGroupItem = memo(function PackGroupItem({
               className="installed-pack-card child-pack"
               onContextMenu={(e) => onContextMenu(e, sp)}
             >
+              <RowBg icon={sp.icon_base64} />
               <InstalledPackIcon pack={sp} />
               <div className="pack-card-content">
                 <div className="pack-card-name">{getBestDisplayName(sp)}</div>
@@ -338,6 +432,7 @@ function saveSizeCache(sizes: Record<string, { size: number; formatted: string }
 export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksPageProps) {
   const [packs, setPacks] = useState<PackInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingCount, setLoadingCount] = useState(0);
   const [selectedType, setSelectedType] = useState<PackType | 'All'>('All');
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
@@ -350,6 +445,9 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [pendingDelete, setPendingDelete] = useState<PackInfo | null>(null);
   const [pendingDeleteSelected, setPendingDeleteSelected] = useState(false);
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
+  const [marketplaceStatus, setMarketplaceStatus] = useState<'idle' | 'loading' | 'done' | 'unavailable'>('idle');
+  const [expandedGridCard, setExpandedGridCard] = useState<string | null>(null);
 
 
   const groupedPacks = useMemo(() => {
@@ -605,17 +703,52 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
     const loadPacks = async () => {
       try {
         setIsLoading(true);
+        setLoadingCount(0);
+
+        // Stream packs in via event listener so we can show a live count
+        const { listen } = await import('@tauri-apps/api/event');
+        const unlisten = await listen<number>('packs_scan_progress', (event) => {
+          setLoadingCount(event.payload);
+        });
+
         const folderPacks = await invoke<PackInfo[]>('get_directory_folders');
-        // Icons are now included in the response
+        unlisten();
+        setLoadingCount(folderPacks.length);
         setPacks(folderPacks);
         setIsLoading(false);
-        
-        // Load cached sizes first
+
+        // ── Marketplace icon fetch (background, non-blocking) ────────
+        setMarketplaceStatus('loading');
+        const packsNeedingIcons = folderPacks
+          .filter(p => !p.icon_base64 && p.uuid)
+          .map(p => ({ path: p.path, uuid: p.uuid }));
+
+        if (packsNeedingIcons.length > 0) {
+          try {
+            const marketIcons = await invoke<{ path: string; icon_base64: string }[]>(
+              'fetch_marketplace_icons',
+              { packs: packsNeedingIcons }
+            );
+            if (marketIcons.length > 0) {
+              const iconMap = new Map(marketIcons.map(r => [r.path, r.icon_base64]));
+              setPacks(prev => prev.map(p =>
+                iconMap.has(p.path) ? { ...p, icon_base64: iconMap.get(p.path)! } : p
+              ));
+            }
+            setMarketplaceStatus('done');
+          } catch {
+            setMarketplaceStatus('unavailable');
+          }
+        } else {
+          setMarketplaceStatus('done');
+        }
+
+        // ── Size calculation ─────────────────────────────────────────
         const cache = loadSizeCache();
         const now = Date.now();
         const cachedSizes: Record<string, { size: number; formatted: string }> = {};
         const needsRefresh: string[] = [];
-        
+
         folderPacks.forEach(pack => {
           const cached = cache[pack.path];
           if (cached && (now - cached.timestamp) < CACHE_EXPIRY_MS) {
@@ -624,21 +757,20 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
             needsRefresh.push(pack.path);
           }
         });
-        
+
         setPackSizes(cachedSizes);
-        
+
         if (needsRefresh.length === 0) return;
-        
-        // Fetch all sizes in one parallel call
+
         setLoadingProgress({ loaded: folderPacks.length - needsRefresh.length, total: folderPacks.length });
-        
+
         const results = await invoke<[string, number, string][]>('get_all_folder_sizes', { paths: needsRefresh });
-        
+
         const newSizes: Record<string, { size: number; formatted: string }> = {};
         results.forEach(([path, size, formatted]) => {
           newSizes[path] = { size, formatted };
         });
-        
+
         setPackSizes(prev => ({ ...prev, ...newSizes }));
         saveSizeCache(newSizes, cache);
         setLoadingProgress({ loaded: folderPacks.length, total: folderPacks.length });
@@ -647,7 +779,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
         setIsLoading(false);
       }
     };
-    
+
     loadPacks();
   }, []);
 
@@ -779,7 +911,17 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
         </div>
         <div className="modal-content installed-packs-content">
           {isLoading ? (
-            <div className="loading">Loading installed packs...</div>
+            <div className="packs-loading-bar">
+              <div className="packs-loading-label">
+                Scanning packs{loadingCount > 0 ? ` — found ${loadingCount} so far` : '...'}
+              </div>
+              <div className="progress-bar-track">
+                <div
+                  className="progress-bar-fill"
+                  style={{ width: loadingCount > 0 ? '100%' : '30%', transition: loadingCount > 0 ? 'none' : 'width 2s ease' }}
+                />
+              </div>
+            </div>
           ) : (
             <>
               {/* Filter tabs */}
@@ -824,6 +966,13 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                    title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
                  >
                    {sortOrder === 'asc' ? '↑' : '↓'}
+                 </button>
+                 <button
+                   className={`view-toggle-btn ${viewMode === 'grid' ? 'active' : ''}`}
+                   onClick={() => setViewMode(viewMode === 'grid' ? 'list' : 'grid')}
+                   title={viewMode === 'grid' ? 'Switch to list view' : 'Switch to grid view'}
+                 >
+                   {viewMode === 'grid' ? '▦' : '☰'}
                  </button>
                  </div>
 
@@ -870,53 +1019,113 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                  </div>
                )}
 
-                  {/* Packs list */}
-                  {filteredGroupedPacks.length === 0 ? (
-                    <div className="no-packs-found">
-                      No packs found{debouncedSearchTerm && ` matching "${debouncedSearchTerm}"`}
-                    </div>
-                  ) : (
-                    <div className="installed-packs-list">
-                      {filteredGroupedPacks.map((group) => {
-                        const isExpanded = expandedGroups.has(group.mainPack.path);
-                        const hasChildren = group.resourcePacks.length > 0 
-                          || group.skinPacks.length > 0 
-                          || group.behaviorPacks.length > 0
-                          || (group.worldTemplates.length > 1);
-                        
-                        return (
-                           <PackGroupItem
+                   {/* Packs list */}
+                   {filteredGroupedPacks.length === 0 ? (
+                     <div className="no-packs-found">
+                       No packs found{debouncedSearchTerm && ` matching "${debouncedSearchTerm}"`}
+                     </div>
+                   ) : viewMode === 'grid' ? (
+                     <div className="packs-grid">
+                       {filteredGroupedPacks.map((group) => {
+                         const isExpanded = expandedGridCard === group.mainPack.path;
+                         return (
+                           <PackGridCard
                              key={group.mainPack.path}
                              group={group}
-                             isExpanded={isExpanded}
-                             hasChildren={hasChildren}
                              packSizes={packSizes}
-                             onToggle={() => toggleGroup(group.mainPack.path)}
                              onContextMenu={handleContextMenu}
-                             getBestDisplayName={getBestDisplayName}
                              onDelete={handleDeletePack}
+                             isExpanded={isExpanded}
+                             onToggleExpand={() => setExpandedGridCard(isExpanded ? null : group.mainPack.path)}
                            />
                          );
-                      })}
-                    </div>
-                  )}
+                       })}
+                       {/* Full-width expanded children panel — rendered outside card flow */}
+                       {expandedGridCard && (() => {
+                         const group = filteredGroupedPacks.find(g => g.mainPack.path === expandedGridCard);
+                         if (!group) return null;
+                         const childPacks: PackInfo[] = [
+                           ...group.worldTemplates.filter(wt => wt.path !== group.mainPack.path),
+                           ...group.resourcePacks,
+                           ...group.skinPacks,
+                           ...group.behaviorPacks,
+                         ];
+                         return (
+                           <div className="packs-grid-children-panel">
+                             <div className="packs-grid-children-header">
+                               <span>{group.displayName} — related packs</span>
+                               <button className="btn btn-icon" onClick={() => setExpandedGridCard(null)} title="Close"><X size={12} /></button>
+                             </div>
+                             <div className="packs-grid-children-list">
+                               {childPacks.map(child => {
+                                 const ChildIcon = getIconForPackType(child.pack_type);
+                                 const childColor = PackTypeColors[child.pack_type];
+                                 return (
+                                   <div key={child.path} className="packs-grid-child-row" onContextMenu={(e) => handleContextMenu(e, child)}>
+                                     {child.icon_base64
+                                       ? <img src={child.icon_base64} alt={child.name} className="packs-grid-child-thumb" />
+                                       : <div className="packs-grid-child-thumb packs-grid-child-thumb-fallback" style={{ backgroundColor: `${childColor}22` }}>
+                                           <ChildIcon size={16} style={{ color: childColor }} />
+                                         </div>
+                                     }
+                                     <div className="packs-grid-child-info">
+                                       <span className="packs-grid-child-name" title={child.name}>{child.name}</span>
+                                       <span style={{ color: childColor, fontSize: '10px' }}>{packTypeLabels[child.pack_type]}</span>
+                                     </div>
+                                     <span className="packs-grid-child-size">{packSizes[child.path]?.formatted ?? ''}</span>
+                                     <button className="btn btn-icon btn-delete" style={{ padding: '2px' }} onClick={(e) => { e.stopPropagation(); handleDeletePack(child); }} title="Delete"><Trash2 size={10} /></button>
+                                   </div>
+                                 );
+                               })}
+                             </div>
+                           </div>
+                         );
+                       })()}
+                     </div>
+                   ) : (
+                      <div className="installed-packs-list">
+                        {filteredGroupedPacks.map((group) => {
+                          const isExpanded = expandedGroups.has(group.mainPack.path);
+                          const hasChildren = group.resourcePacks.length > 0 
+                            || group.skinPacks.length > 0 
+                            || group.behaviorPacks.length > 0
+                            || (group.worldTemplates.length > 1);
+                          return (
+                             <PackGroupItem
+                               key={group.mainPack.path}
+                               group={group}
+                               isExpanded={isExpanded}
+                               hasChildren={hasChildren}
+                               packSizes={packSizes}
+                               onToggle={() => toggleGroup(group.mainPack.path)}
+                               onContextMenu={handleContextMenu}
+                               getBestDisplayName={getBestDisplayName}
+                               onDelete={handleDeletePack}
+                             />
+                           );
+                        })}
+                      </div>
+                   )}
 
                 {/* Summary */}
-                {filteredGroupedPacks.length > 0 && (
-                  <div className="packs-summary">
-                    <div className="summary-stats">
-                      <span>Showing {filteredGroupedPacks.length} of {groupedPacks.length} packs</span>
-                      {loadingProgress.loaded < loadingProgress.total && loadingProgress.total > 0 && (
-                        <span className="loading-progress">
-                          Calculating sizes: {loadingProgress.loaded}/{loadingProgress.total}
-                        </span>
-                      )}
-                      {filteredTotalSize > 0 && (
-                        <span className="total-size">
-                          Total: {formatBytes(filteredTotalSize)}
-                        </span>
-                      )}
-                    </div>
+                 {filteredGroupedPacks.length > 0 && (
+                   <div className="packs-summary">
+                     <div className="summary-stats">
+                       <span>Showing {filteredGroupedPacks.length} of {groupedPacks.length} packs</span>
+                       {marketplaceStatus === 'loading' && (
+                         <span className="loading-progress">Fetching marketplace icons...</span>
+                       )}
+                       {loadingProgress.loaded < loadingProgress.total && loadingProgress.total > 0 && (
+                         <span className="loading-progress">
+                           Calculating sizes: {loadingProgress.loaded}/{loadingProgress.total}
+                         </span>
+                       )}
+                       {filteredTotalSize > 0 && (
+                         <span className="total-size">
+                           Total: {formatBytes(filteredTotalSize)}
+                         </span>
+                       )}
+                     </div>
                   </div>
                  )}
              </>

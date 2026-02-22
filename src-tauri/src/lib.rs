@@ -980,24 +980,50 @@ fn subdir_base_names(path_opt: &Option<String>) -> std::collections::HashSet<Str
     names
 }
 
+/// Returns ALL candidate `com.mojang/<subfolder>` paths on this machine —
+/// both the `Shared` folder and every GUID user folder — regardless of which
+/// one is configured as the primary destination.  This ensures the installed-
+/// packs views and mashup correlation see packs in every location (e.g. STAR
+/// WARS world template lives in `Shared/world_templates` while the primary WT
+/// destination is the GUID folder that has more entries).
+fn all_mc_subfolder_paths(subfolder: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(roaming) = dirs::config_dir() {
+        let mc_users = roaming.join("Minecraft Bedrock").join("Users");
+        if let Ok(entries) = std::fs::read_dir(&mc_users) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("games").join("com.mojang").join(subfolder);
+                if candidate.exists() && candidate.is_dir() {
+                    paths.push(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    paths
+}
+
 /// Given the configured paths, build the set of base names that are present in
 /// world_templates AND in resource_packs.
+/// Scans ALL candidate MC paths (Shared + every GUID folder) so packs spread
+/// across locations are correlated correctly.
 /// A skin-pack alone sharing a base name with a world template is not a reliable
 /// mashup signal (e.g. "BIG ONE BLOCK" has both a WT and a SP but is not a mashup).
 /// Requiring WT + RP correctly identifies real mashups (Dragons, Biome Survival, etc.)
 /// while excluding world templates that merely happen to share a name with a skin pack.
 fn build_correlated_mashup_bases(
-    rp_path: &Option<String>,
-    sp_path: &Option<String>,
-    wt_path: &Option<String>,
+    _rp_path: &Option<String>,
+    _sp_path: &Option<String>,
+    _wt_path: &Option<String>,
 ) -> std::collections::HashSet<String> {
-    let rp_bases = subdir_base_names(rp_path);
-    let _sp_bases = subdir_base_names(sp_path); // kept for future use
-    let wt_bases = subdir_base_names(wt_path);
-    wt_bases
-        .into_iter()
-        .filter(|b| rp_bases.contains(b))
-        .collect()
+    let mut rp_bases = std::collections::HashSet::new();
+    for p in all_mc_subfolder_paths("resource_packs") {
+        for base in subdir_base_names(&Some(p)) { rp_bases.insert(base); }
+    }
+    let mut wt_bases = std::collections::HashSet::new();
+    for p in all_mc_subfolder_paths("world_templates") {
+        for base in subdir_base_names(&Some(p)) { wt_bases.insert(base); }
+    }
+    wt_bases.into_iter().filter(|b| rp_bases.contains(b)).collect()
 }
 
 /// The single source of truth for "is this folder a mash-up pack?".
@@ -1007,23 +1033,16 @@ fn is_mashup(folder_name: &str, correlated: &std::collections::HashSet<String>) 
 }
 
 #[tauri::command]
-async fn get_installed_packs_stats(app: AppHandle) -> Result<Vec<PackStats>, String> {
-    let state = app.state::<AppState>();
-    let settings = state.settings.read().clone();
+async fn get_installed_packs_stats(_app: AppHandle) -> Result<Vec<PackStats>, String> {
+    // Build correlation set scanning ALL candidate MC paths.
+    let correlated = build_correlated_mashup_bases(&None, &None, &None);
 
-    // Build the correlation set once, before spawning the blocking task.
-    let correlated = build_correlated_mashup_bases(
-        &settings.resource_pack_path,
-        &settings.skin_pack_path,
-        &settings.world_template_path,
-    );
-
-    let folders = vec![
-        ("BehaviorPack", settings.behavior_pack_path.clone()),
-        ("ResourcePack",  settings.resource_pack_path.clone()),
-        ("SkinPack",      settings.skin_pack_path.clone()),
-        ("WorldTemplate", settings.world_template_path.clone()),
-    ];
+    // Enumerate ALL candidate locations for each pack type.
+    let mut folders: Vec<(&'static str, String)> = Vec::new();
+    for p in all_mc_subfolder_paths("behavior_packs")  { folders.push(("BehaviorPack", p)); }
+    for p in all_mc_subfolder_paths("resource_packs")  { folders.push(("ResourcePack", p)); }
+    for p in all_mc_subfolder_paths("skin_packs")      { folders.push(("SkinPack", p)); }
+    for p in all_mc_subfolder_paths("world_templates") { folders.push(("WorldTemplate", p)); }
 
     let stats: Vec<PackStats> = tokio::task::spawn_blocking(move || {
         let mut bp_count = 0usize; let mut bp_size = 0u64;
@@ -1031,36 +1050,39 @@ async fn get_installed_packs_stats(app: AppHandle) -> Result<Vec<PackStats>, Str
         let mut sp_count = 0usize; let mut sp_size = 0u64;
         let mut wt_count = 0usize; let mut wt_size = 0u64;
         let mut mu_count = 0usize; let mut mu_size = 0u64;
+        let mut seen = std::collections::HashSet::new();
 
-        for (pack_type, path_opt) in &folders {
-            if let Some(path_str) = path_opt {
-                let path = std::path::Path::new(path_str);
-                if !path.exists() { continue; }
+        for (pack_type, path_str) in &folders {
+            let path = std::path::Path::new(path_str);
+            if !path.exists() { continue; }
 
-                let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(path)
-                    .ok()
-                    .into_iter()
-                    .flat_map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()))
-                    .collect();
+            let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(path)
+                .ok()
+                .into_iter()
+                .flat_map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()))
+                .collect();
 
-                for dir in &dirs {
-                    let raw_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    let size = calculate_folder_size(dir);
+            for dir in &dirs {
+                // Deduplicate across Shared/GUID locations via canonical path.
+                let canonical = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+                if !seen.insert(canonical) { continue; }
 
-                    // Only world-template folders are promoted to MashupPack.
-                    // RP/SP/BP entries that share a name keep their own type for
-                    // accurate per-category counts.
-                    if *pack_type == "WorldTemplate" && is_mashup(raw_name, &correlated) {
-                        mu_count += 1;
-                        mu_size  += size;
-                    } else {
-                        match *pack_type {
-                            "BehaviorPack"  => { bp_count += 1; bp_size += size; }
-                            "ResourcePack"  => { rp_count += 1; rp_size += size; }
-                            "SkinPack"      => { sp_count += 1; sp_size += size; }
-                            "WorldTemplate" => { wt_count += 1; wt_size += size; }
-                            _ => {}
-                        }
+                let raw_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let size = calculate_folder_size(dir);
+
+                // Only world-template folders are promoted to MashupPack.
+                // RP/SP/BP entries that share a name keep their own type for
+                // accurate per-category counts.
+                if *pack_type == "WorldTemplate" && is_mashup(raw_name, &correlated) {
+                    mu_count += 1;
+                    mu_size  += size;
+                } else {
+                    match *pack_type {
+                        "BehaviorPack"  => { bp_count += 1; bp_size += size; }
+                        "ResourcePack"  => { rp_count += 1; rp_size += size; }
+                        "SkinPack"      => { sp_count += 1; sp_size += size; }
+                        "WorldTemplate" => { wt_count += 1; wt_size += size; }
+                        _ => {}
                     }
                 }
             }
@@ -1147,53 +1169,53 @@ fn delete_all_packs(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_directory_folders(app: AppHandle) -> Result<Vec<PackInfo>, String> {
-    let state = app.state::<AppState>();
-    let settings = state.settings.read().clone();
+async fn get_directory_folders(_app: AppHandle) -> Result<Vec<PackInfo>, String> {
+    // Build correlation set scanning ALL candidate MC paths.
+    let correlated = build_correlated_mashup_bases(&None, &None, &None);
 
-    // Build correlation set before entering the blocking task.
-    let correlated = build_correlated_mashup_bases(
-        &settings.resource_pack_path,
-        &settings.skin_pack_path,
-        &settings.world_template_path,
-    );
-
-    let pack_folders = vec![
-        ("BehaviorPack", settings.behavior_pack_path.clone()),
-        ("ResourcePack", settings.resource_pack_path.clone()),
-        ("SkinPack", settings.skin_pack_path.clone()),
-        ("WorldTemplate", settings.world_template_path.clone()),
+    // Enumerate ALL candidate locations for each pack type.
+    let pack_subfolders: &[(&str, &str)] = &[
+        ("BehaviorPack", "behavior_packs"),
+        ("ResourcePack", "resource_packs"),
+        ("SkinPack",     "skin_packs"),
+        ("WorldTemplate","world_templates"),
     ];
-    
-    let all_folders: Vec<PackInfo> = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
 
-        let mut folder_paths: Vec<(String, String, String)> = Vec::new();
+    let mut folder_paths: Vec<(String, String, String)> = Vec::new();
+    let mut seen_canonical = std::collections::HashSet::new();
 
-        for (pack_type_str, path_opt) in &pack_folders {
-            if let Some(path_str) = path_opt {
-                let path = std::path::Path::new(path_str);
-                if path.exists() && path.is_dir() {
-                    if let Ok(entries) = std::fs::read_dir(path) {
-                        for entry in entries.flatten() {
-                            let entry_path = entry.path();
-                            if entry_path.is_dir() {
-                                let folder_name = entry_path
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("Unknown")
-                                    .to_string();
-                                folder_paths.push((
-                                    entry_path.to_string_lossy().to_string(),
-                                    folder_name,
-                                    pack_type_str.to_string(),
-                                ));
-                            }
+    for (type_str, subfolder) in pack_subfolders {
+        for path_str in all_mc_subfolder_paths(subfolder) {
+            let path = std::path::Path::new(&path_str);
+            if path.exists() && path.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for entry in entries.flatten() {
+                        let entry_path = entry.path();
+                        if entry_path.is_dir() {
+                            // Deduplicate via canonical path.
+                            let canonical = entry_path.canonicalize()
+                                .unwrap_or_else(|_| entry_path.clone());
+                            if !seen_canonical.insert(canonical) { continue; }
+
+                            let folder_name = entry_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Unknown")
+                                .to_string();
+                            folder_paths.push((
+                                entry_path.to_string_lossy().to_string(),
+                                folder_name,
+                                type_str.to_string(),
+                            ));
                         }
                     }
                 }
             }
         }
+    }
+
+    let all_folders: Vec<PackInfo> = tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
 
         let mut final_results: Vec<PackInfo> = folder_paths
             .into_par_iter()
@@ -1232,28 +1254,55 @@ async fn get_directory_folders(app: AppHandle) -> Result<Vec<PackInfo>, String> 
         final_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
         final_results
     }).await.map_err(|e| e.to_string())?;
-    
+
     Ok(all_folders)
 }
 
 fn read_pack_icon(folder_path: &std::path::Path) -> Option<String> {
     let icon_names = ["pack_icon.png", "Pack_Icon.png", "world_icon.jpeg", "world_icon.jpg", "icon.png"];
-    const MAX_ICON_SIZE: u64 = 2 * 1024 * 1024;
+    // 64 MB hard cap — anything larger is almost certainly corrupt/wrong
+    const MAX_ICON_SIZE: u64 = 64 * 1024 * 1024;
+    const MAX_DIMENSION: u32 = 256;
 
     for icon_name in &icon_names {
         let icon_path = folder_path.join(icon_name);
         if icon_path.exists() {
-            if icon_path.metadata().map(|m| m.len()).unwrap_or(u64::MAX) > MAX_ICON_SIZE {
+            let file_size = icon_path.metadata().map(|m| m.len()).unwrap_or(u64::MAX);
+            if file_size > MAX_ICON_SIZE {
                 continue;
             }
             if let Ok(icon_data) = std::fs::read(&icon_path) {
-                let mime = if icon_name.ends_with(".jpg") || icon_name.ends_with(".jpeg") {
-                    "image/jpeg"
+                // If the image fits within our dimension limit, encode it directly
+                // without a full decode/re-encode cycle (fast path).
+                // For oversized files we decode, resize, and re-encode as PNG.
+                let is_jpeg = icon_name.ends_with(".jpg") || icon_name.ends_with(".jpeg");
+
+                // Attempt a fast path: decode just the dimensions.
+                let needs_resize = if let Ok(reader) = image::ImageReader::new(std::io::Cursor::new(&icon_data)).with_guessed_format() {
+                    if let Ok((w, h)) = reader.into_dimensions() {
+                        w > MAX_DIMENSION || h > MAX_DIMENSION
+                    } else {
+                        false
+                    }
                 } else {
-                    "image/png"
+                    false
                 };
-                let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &icon_data);
-                return Some(format!("data:{};base64,{}", mime, b64));
+
+                if !needs_resize {
+                    let mime = if is_jpeg { "image/jpeg" } else { "image/png" };
+                    let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &icon_data);
+                    return Some(format!("data:{};base64,{}", mime, b64));
+                }
+
+                // Slow path: decode → resize → re-encode as PNG
+                if let Ok(img) = image::load_from_memory(&icon_data) {
+                    let resized = img.resize(MAX_DIMENSION, MAX_DIMENSION, image::imageops::FilterType::Lanczos3);
+                    let mut buf = Vec::new();
+                    if resized.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).is_ok() {
+                        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buf);
+                        return Some(format!("data:image/png;base64,{}", b64));
+                    }
+                }
             }
         }
     }
@@ -1409,33 +1458,32 @@ struct InstalledPackInfo {
     folder_name: String,
 }
 
-fn get_installed_packs_info(app: &AppHandle) -> Vec<InstalledPackInfo> {
-    let state = app.state::<AppState>();
-    let settings = state.settings.read().clone();
+fn get_installed_packs_info(_app: &AppHandle) -> Vec<InstalledPackInfo> {
+    // Build correlation set scanning ALL candidate MC paths.
+    let correlated = build_correlated_mashup_bases(&None, &None, &None);
 
-    let correlated = build_correlated_mashup_bases(
-        &settings.resource_pack_path,
-        &settings.skin_pack_path,
-        &settings.world_template_path,
-    );
-
-    let pack_folders = vec![
-        ("BehaviorPack", settings.behavior_pack_path.clone()),
-        ("ResourcePack",  settings.resource_pack_path.clone()),
-        ("SkinPack",      settings.skin_pack_path.clone()),
-        ("WorldTemplate", settings.world_template_path.clone()),
+    let pack_subfolders: &[(&str, &str)] = &[
+        ("BehaviorPack", "behavior_packs"),
+        ("ResourcePack",  "resource_packs"),
+        ("SkinPack",      "skin_packs"),
+        ("WorldTemplate", "world_templates"),
     ];
 
     let mut installed_packs: Vec<InstalledPackInfo> = Vec::new();
+    let mut seen_canonical = std::collections::HashSet::new();
 
-    for (pack_type_str, path_opt) in &pack_folders {
-        if let Some(path_str) = path_opt {
-            let path = std::path::Path::new(path_str);
+    for (pack_type_str, subfolder) in pack_subfolders {
+        for path_str in all_mc_subfolder_paths(subfolder) {
+            let path = std::path::Path::new(&path_str);
             if path.exists() && path.is_dir() {
                 if let Ok(entries) = std::fs::read_dir(path) {
                     for entry in entries.flatten() {
                         let entry_path = entry.path();
                         if entry_path.is_dir() {
+                            let canonical = entry_path.canonicalize()
+                                .unwrap_or_else(|_| entry_path.clone());
+                            if !seen_canonical.insert(canonical) { continue; }
+
                             let folder_name = entry_path
                                 .file_name()
                                 .and_then(|n| n.to_str())
@@ -1879,6 +1927,95 @@ fn emit_log(app: &AppHandle, level: &str, message: &str) {
     let _ = app.emit("log", log);
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MarketplaceIconResult {
+    pub path: String,
+    pub icon_base64: String,
+}
+
+/// Reads keys.tsv from the Toolcoin installation, matches the provided pack UUIDs
+/// to marketplace UUIDs, fetches thumbnail images, and returns base64-encoded icons.
+/// Packs whose UUID is not in keys.tsv, or whose fetch fails, are silently skipped.
+#[tauri::command]
+async fn fetch_marketplace_icons(
+    packs: Vec<serde_json::Value>,
+) -> Result<Vec<MarketplaceIconResult>, String> {
+    const KEYS_TSV: &str = r"C:\Program Files\alphtoolcoin\data\flutter_assets\assets\keys.tsv";
+    const MAX_DIMENSION: u32 = 256;
+
+    // Parse keys.tsv: ManifestUUID (col 1, 0-indexed) → MarketUUID (col 0)
+    let tsv_content = std::fs::read_to_string(KEYS_TSV)
+        .map_err(|e| format!("Cannot read keys.tsv: {e}"))?;
+
+    let mut manifest_to_market: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    for line in tsv_content.lines().skip(1) {
+        let cols: Vec<&str> = line.splitn(4, '\t').collect();
+        if cols.len() >= 2 {
+            let market_uuid = cols[0].trim().to_lowercase();
+            let manifest_uuid = cols[1].trim().to_lowercase();
+            manifest_to_market.insert(manifest_uuid, market_uuid);
+        }
+    }
+
+    // Build list of (path, market_uuid) for packs that have a matching UUID
+    let mut to_fetch: Vec<(String, String)> = Vec::new();
+    for pack in &packs {
+        let path = pack.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let uuid = pack.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+        if let Some(market_uuid) = manifest_to_market.get(&uuid) {
+            to_fetch.push((path, market_uuid.clone()));
+        }
+    }
+
+    if to_fetch.is_empty() {
+        return Ok(vec![]);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut results = Vec::new();
+
+    for (path, market_uuid) in to_fetch {
+        let url = format!(
+            "https://ugc.production.minecraftservices.com/v1/publishedServiceContent/image/offer/{}/Thumbnail_512.0.jpg",
+            market_uuid
+        );
+
+        let Ok(resp) = client.get(&url).send().await else { continue };
+        if !resp.status().is_success() { continue }
+        let Ok(bytes) = resp.bytes().await else { continue };
+        if bytes.is_empty() { continue }
+
+        // Resize if needed
+        let icon_b64 = if let Ok(img) = image::load_from_memory(&bytes) {
+            let resized = if img.width() > MAX_DIMENSION || img.height() > MAX_DIMENSION {
+                img.resize(MAX_DIMENSION, MAX_DIMENSION, image::imageops::FilterType::Lanczos3)
+            } else {
+                img
+            };
+            let mut buf = Vec::new();
+            if resized.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).is_ok() {
+                format!("data:image/png;base64,{}",
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &buf))
+            } else {
+                continue
+            }
+        } else {
+            // fallback: encode raw JPEG bytes
+            format!("data:image/jpeg;base64,{}",
+                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes))
+        };
+
+        results.push(MarketplaceIconResult { path, icon_base64: icon_b64 });
+    }
+
+    Ok(results)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let settings = load_settings_from_file();
@@ -1963,6 +2100,7 @@ pub fn run() {
             close_window,
             save_ui_scale,
             compute_pack_status,
+            fetch_marketplace_icons,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

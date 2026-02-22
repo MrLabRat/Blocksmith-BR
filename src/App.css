@@ -1011,7 +1011,7 @@ body {
   width: 48px;
   height: 48px;
   border-radius: 6px;
-  object-fit: cover;
+  object-fit: contain;
   flex-shrink: 0;
 }
 
