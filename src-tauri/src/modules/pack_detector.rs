@@ -550,13 +550,19 @@ fn extract_icon_from_archive(
         if let Ok(mut file) = archive.by_name(icon_name) {
             let mut buffer = Vec::new();
             if file.read_to_end(&mut buffer).is_ok() {
-                return Some(general_purpose::STANDARD.encode(&buffer));
+                let mime = if icon_name.ends_with(".jpg") || icon_name.ends_with(".jpeg") {
+                    "image/jpeg"
+                } else {
+                    "image/png"
+                };
+                return Some(format!("data:{};base64,{}", mime, general_purpose::STANDARD.encode(&buffer)));
             }
         }
     }
 
     if subfolder.is_empty() {
         let mut found_index: Option<usize> = None;
+        let mut found_is_jpeg = false;
         for i in 0..archive.len() {
             if let Ok(file) = archive.by_index(i) {
                 let name = file.name().to_lowercase();
@@ -565,6 +571,7 @@ fn extract_icon_from_archive(
                     || name.ends_with("world_icon.jpg"))
                     && !name.contains('/')
                 {
+                    found_is_jpeg = name.ends_with(".jpeg") || name.ends_with(".jpg");
                     found_index = Some(i);
                     break;
                 }
@@ -575,7 +582,8 @@ fn extract_icon_from_archive(
             if let Ok(mut f) = archive.by_index(idx) {
                 let mut buffer = Vec::new();
                 if f.read_to_end(&mut buffer).is_ok() {
-                    return Some(general_purpose::STANDARD.encode(&buffer));
+                    let mime = if found_is_jpeg { "image/jpeg" } else { "image/png" };
+                    return Some(format!("data:{};base64,{}", mime, general_purpose::STANDARD.encode(&buffer)));
                 }
             }
         }

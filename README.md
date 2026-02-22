@@ -57,19 +57,17 @@ Blocksmith is a desktop application that helps you organize, import, and manage 
 
 1. **Detection** - Blocksmith automatically detects 4D skins by checking for `geometry.json`
 2. **Extraction** - 4D skins are extracted to `SOURCE_FOLDER/4D Skin Packs/PACK_NAME`
-3. **SkinMaster Integration** - Use the extracted path with [SkinMaster](https://github.com/MrLabRat/Blocksmith-BR) for full 4D skin functionality including encryption
+3. **SkinMaster Integration** - Blocksmith bundles SkinMaster (by xGG9 / RX Studio) and launches it automatically with the extracted path for full 4D skin functionality including encryption
 
 ## Installation
 
-### From Release
-1. Download the latest release from the [Releases](https://github.com/MrLabRat/Blocksmith-BR/releases) page
-2. Launch Blocksmith by opening `Blocksmith.exe`
+Blocksmith ships as a **standalone portable `.exe`** — no installer, no setup wizard, no companion files required. Just download `Blocksmith.exe` from the [Releases](https://github.com/MrLabRat/Blocksmith-BR/releases) page and run it. Nothing is written to `Program Files`; the only files Blocksmith creates are your settings, saved to `%APPDATA%\blocksmith\`.
 
 ### From Source
 ```bash
 # Clone the repository
 git clone https://github.com/MrLabRat/Blocksmith-BR.git
-cd "MC Bedrock Pack Mover"
+cd Blocksmith
 
 # Install dependencies
 npm install
@@ -77,8 +75,8 @@ npm install
 # Run in development mode
 npm run tauri dev
 
-# Build for production
-npm run tauri build
+# Build portable exe (no installer)
+npm run tauri build -- --no-bundle
 ```
 
 ## Usage
@@ -119,12 +117,12 @@ npm run tauri build
 - **Backend**: Rust, Tauri 2
 - **UI Components**: Lucide Icons
 - **Styling**: CSS with theme system
-- **Build**: Tauri bundler for Windows MSI/portable
+- **Build**: Tauri — portable single-file exe, no installer
 
 ## Project Structure
 
 ```
-MC Bedrock Pack Mover/
+Blocksmith/
 ├── src/                    # React frontend
 │   ├── components/         # UI components
 │   ├── styles/             # Component CSS
@@ -135,7 +133,6 @@ MC Bedrock Pack Mover/
 │   ├── src/
 │   │   ├── lib.rs          # Main Tauri commands
 │   │   └── modules/        # Pack detection, file moving
-│   ├── resources/          # Bundled resources (SkinMaster)
 │   └── Cargo.toml          # Rust dependencies
 ├── public/                 # Static assets
 │   └── icons/              # App icons
@@ -154,7 +151,7 @@ MC Bedrock Pack Mover/
 npm run dev          # Start Vite dev server
 npm run build        # Build frontend only
 npm run tauri dev    # Run in development mode
-npm run tauri build  # Build production MSI/portable
+npm run tauri build -- --no-bundle  # Build portable exe (no installer)
 ```
 
 ### Adding New Features
@@ -164,7 +161,7 @@ npm run tauri build  # Build production MSI/portable
 
 ## Known Issues
 
-- 4D skin pack encryption requires SkinMaster - Blocksmith extracts them but cannot encrypt
+- 4D skin encryption is handled by the bundled SkinMaster tool (by xGG9 / RX Studio), launched automatically
 - World template updates require manual intervention for existing worlds
 - Premium cache watching is experimental
 
@@ -181,7 +178,7 @@ This project is provided as-is for the Minecraft Bedrock community.
 - Built with [Tauri](https://tauri.app/)
 - Icons by [Lucide](https://lucide.dev/)
 - Minecraft font from [CDNFonts](https://fonts.cdnfonts.com/)
-- 4D Skin support powered by [SkinMaster] (Credits: xGG9 - RX Studio)
+- **SkinMaster** — 4D skin encryption tool by **xGG9 (RX Studio)**. Blocksmith bundles SkinMaster and launches it automatically for 4D skin packs.
 
 ---
 

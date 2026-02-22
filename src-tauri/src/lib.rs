@@ -461,31 +461,47 @@ fn load_settings_from_file() -> Settings {
 
 fn auto_detect_mc_paths() -> Settings {
     let mut settings = Settings::default();
-    
+
     if let Some(roaming) = dirs::config_dir() {
         let mc_base = roaming.join("Minecraft Bedrock").join("Users");
-        
-        // Check Shared folder for all pack types
-        let shared_path = mc_base.join("Shared").join("games").join("com.mojang");
-        if shared_path.exists() {
-            let bp = shared_path.join("behavior_packs");
-            let rp = shared_path.join("resource_packs");
-            let sp = shared_path.join("skin_packs");
-            let wt = shared_path.join("world_templates");
-            
-            if bp.exists() {
-                settings.behavior_pack_path = Some(bp.to_string_lossy().to_string());
-            }
-            if rp.exists() {
-                settings.resource_pack_path = Some(rp.to_string_lossy().to_string());
-            }
-            if sp.exists() {
-                settings.skin_pack_path = Some(sp.to_string_lossy().to_string());
-            }
-            if wt.exists() {
-                settings.world_template_path = Some(wt.to_string_lossy().to_string());
+
+        // Collect all com.mojang candidate paths: Shared + all numeric GUID subfolders.
+        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+
+        if let Ok(entries) = std::fs::read_dir(&mc_base) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let mojang = p.join("games").join("com.mojang");
+                    if mojang.exists() {
+                        candidates.push(mojang);
+                    }
+                }
             }
         }
+
+        // Helper: count immediate subdirectories in a folder.
+        let subdir_count = |dir: &std::path::Path| -> usize {
+            std::fs::read_dir(dir)
+                .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count())
+                .unwrap_or(0)
+        };
+
+        // For each pack-type subfolder, pick the candidate that has the MOST entries.
+        // This ensures we land on the folder where the user's packs actually live,
+        // rather than an empty mirror folder in another location.
+        let pick_best = |subfolder: &str| -> Option<String> {
+            candidates.iter()
+                .map(|c| c.join(subfolder))
+                .filter(|p| p.exists())
+                .max_by_key(|p| subdir_count(p))
+                .map(|p| p.to_string_lossy().into_owned())
+        };
+
+        settings.behavior_pack_path  = pick_best("behavior_packs");
+        settings.resource_pack_path  = pick_best("resource_packs");
+        settings.skin_pack_path      = pick_best("skin_packs");
+        settings.world_template_path = pick_best("world_templates");
     }
     
     // Auto-detect ToolCoin downloads path
@@ -914,94 +930,151 @@ pub struct PackStats {
     pub total_size_formatted: String,
 }
 
+/// Returns true if a folder name (any casing) contains a mash-up keyword.
+fn folder_name_is_mashup(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("mashup") || lower.contains("mash-up") || lower.contains("mash up")
+}
+
+/// Strip all trailing parenthesised tags from a folder name to get the base title.
+///
+/// Real-world examples this handles:
+///   "Adventure Time Mash-up (world_template)"  -> "adventure time mash-up"
+///   "Dragons Mash-Up (world_template) (TEMPLATE)" -> "dragons mash-up"
+///   "Halloween Mash-up (resources) (RESOURCE)"    -> "halloween mash-up"
+///   "1,000,000 Horses! (addon) (BP)"              -> "1,000,000 horses!"
+///
+/// Strategy: repeatedly strip the last " (…)" group until none remain,
+/// then lowercase and trim.
+fn pack_base_name(name: &str) -> String {
+    let mut s = name.trim().to_string();
+    loop {
+        if let Some(open) = s.rfind(" (") {
+            // Make sure there is a closing ')' after the '('
+            if s[open..].contains(')') {
+                s = s[..open].trim().to_string();
+                continue;
+            }
+        }
+        break;
+    }
+    s.to_lowercase()
+}
+
+/// Collect a map of base_name -> count-of-entries for every immediate subdir
+/// in the given path option.  Files and non-dirs are skipped.
+fn subdir_base_names(path_opt: &Option<String>) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    if let Some(p) = path_opt {
+        if let Ok(entries) = std::fs::read_dir(p) {
+            for entry in entries.flatten() {
+                let ep = entry.path();
+                if ep.is_dir() {
+                    if let Some(n) = ep.file_name().and_then(|n| n.to_str()) {
+                        names.insert(pack_base_name(n));
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Given the configured paths, build the set of base names that are present in
+/// world_templates AND in resource_packs.
+/// A skin-pack alone sharing a base name with a world template is not a reliable
+/// mashup signal (e.g. "BIG ONE BLOCK" has both a WT and a SP but is not a mashup).
+/// Requiring WT + RP correctly identifies real mashups (Dragons, Biome Survival, etc.)
+/// while excluding world templates that merely happen to share a name with a skin pack.
+fn build_correlated_mashup_bases(
+    rp_path: &Option<String>,
+    sp_path: &Option<String>,
+    wt_path: &Option<String>,
+) -> std::collections::HashSet<String> {
+    let rp_bases = subdir_base_names(rp_path);
+    let _sp_bases = subdir_base_names(sp_path); // kept for future use
+    let wt_bases = subdir_base_names(wt_path);
+    wt_bases
+        .into_iter()
+        .filter(|b| rp_bases.contains(b))
+        .collect()
+}
+
+/// The single source of truth for "is this folder a mash-up pack?".
+/// Checks keyword first, then cross-folder correlation.
+fn is_mashup(folder_name: &str, correlated: &std::collections::HashSet<String>) -> bool {
+    folder_name_is_mashup(folder_name) || correlated.contains(&pack_base_name(folder_name))
+}
+
 #[tauri::command]
 async fn get_installed_packs_stats(app: AppHandle) -> Result<Vec<PackStats>, String> {
     let state = app.state::<AppState>();
     let settings = state.settings.read().clone();
-    
+
+    // Build the correlation set once, before spawning the blocking task.
+    let correlated = build_correlated_mashup_bases(
+        &settings.resource_pack_path,
+        &settings.skin_pack_path,
+        &settings.world_template_path,
+    );
+
     let folders = vec![
         ("BehaviorPack", settings.behavior_pack_path.clone()),
-        ("ResourcePack", settings.resource_pack_path.clone()),
-        ("SkinPack", settings.skin_pack_path.clone()),
+        ("ResourcePack",  settings.resource_pack_path.clone()),
+        ("SkinPack",      settings.skin_pack_path.clone()),
         ("WorldTemplate", settings.world_template_path.clone()),
     ];
-    
+
     let stats: Vec<PackStats> = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
+        let mut bp_count = 0usize; let mut bp_size = 0u64;
+        let mut rp_count = 0usize; let mut rp_size = 0u64;
+        let mut sp_count = 0usize; let mut sp_size = 0u64;
+        let mut wt_count = 0usize; let mut wt_size = 0u64;
+        let mut mu_count = 0usize; let mut mu_size = 0u64;
 
-        let mut results: Vec<PackStats> = Vec::new();
-        let mut world_template_count = 0;
-        let mut world_template_size = 0u64;
-        let mut mashup_count = 0;
-        let mut mashup_size = 0u64;
-
-        for (pack_type, path_opt) in folders {
+        for (pack_type, path_opt) in &folders {
             if let Some(path_str) = path_opt {
-                let path = std::path::Path::new(&path_str);
-                if path.exists() {
-                    let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(path)
-                        .ok()
-                        .into_iter()
-                        .flat_map(|entries| {
-                            entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir())
-                        })
-                        .collect();
+                let path = std::path::Path::new(path_str);
+                if !path.exists() { continue; }
 
-                    if pack_type == "WorldTemplate" {
-                        for dir in &dirs {
-                            let name = dir.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_lowercase();
-                            let is_mashup = name.contains("mashup")
-                                || name.contains("mash-up")
-                                || name.contains("mash up");
-                            let size = calculate_folder_size(dir);
-                            if is_mashup {
-                                mashup_count += 1;
-                                mashup_size += size;
-                            } else {
-                                world_template_count += 1;
-                                world_template_size += size;
-                            }
-                        }
+                let dirs: Vec<std::path::PathBuf> = std::fs::read_dir(path)
+                    .ok()
+                    .into_iter()
+                    .flat_map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()))
+                    .collect();
+
+                for dir in &dirs {
+                    let raw_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let size = calculate_folder_size(dir);
+
+                    // Only world-template folders are promoted to MashupPack.
+                    // RP/SP/BP entries that share a name keep their own type for
+                    // accurate per-category counts.
+                    if *pack_type == "WorldTemplate" && is_mashup(raw_name, &correlated) {
+                        mu_count += 1;
+                        mu_size  += size;
                     } else {
-                        let count = dirs.len();
-                        let total_size: u64 = dirs.par_iter()
-                            .map(|dir| calculate_folder_size(dir))
-                            .sum();
-                        results.push(PackStats {
-                            pack_type: pack_type.to_string(),
-                            count,
-                            total_size,
-                            total_size_formatted: format_bytes(total_size),
-                        });
+                        match *pack_type {
+                            "BehaviorPack"  => { bp_count += 1; bp_size += size; }
+                            "ResourcePack"  => { rp_count += 1; rp_size += size; }
+                            "SkinPack"      => { sp_count += 1; sp_size += size; }
+                            "WorldTemplate" => { wt_count += 1; wt_size += size; }
+                            _ => {}
+                        }
                     }
                 }
             }
         }
 
-        if world_template_count > 0 {
-            results.push(PackStats {
-                pack_type: "WorldTemplate".to_string(),
-                count: world_template_count,
-                total_size: world_template_size,
-                total_size_formatted: format_bytes(world_template_size),
-            });
-        }
-
-        if mashup_count > 0 {
-            results.push(PackStats {
-                pack_type: "MashupPack".to_string(),
-                count: mashup_count,
-                total_size: mashup_size,
-                total_size_formatted: format_bytes(mashup_size),
-            });
-        }
-
+        let mut results: Vec<PackStats> = Vec::new();
+        if bp_count > 0 { results.push(PackStats { pack_type: "BehaviorPack".to_string(),  count: bp_count, total_size: bp_size, total_size_formatted: format_bytes(bp_size) }); }
+        if rp_count > 0 { results.push(PackStats { pack_type: "ResourcePack".to_string(),   count: rp_count, total_size: rp_size, total_size_formatted: format_bytes(rp_size) }); }
+        if sp_count > 0 { results.push(PackStats { pack_type: "SkinPack".to_string(),        count: sp_count, total_size: sp_size, total_size_formatted: format_bytes(sp_size) }); }
+        if wt_count > 0 { results.push(PackStats { pack_type: "WorldTemplate".to_string(),   count: wt_count, total_size: wt_size, total_size_formatted: format_bytes(wt_size) }); }
+        if mu_count > 0 { results.push(PackStats { pack_type: "MashupPack".to_string(),      count: mu_count, total_size: mu_size, total_size_formatted: format_bytes(mu_size) }); }
         results
     }).await.map_err(|e| e.to_string())?;
-    
+
     Ok(stats)
 }
 
@@ -1077,7 +1150,14 @@ fn delete_all_packs(app: AppHandle) -> Result<(), String> {
 async fn get_directory_folders(app: AppHandle) -> Result<Vec<PackInfo>, String> {
     let state = app.state::<AppState>();
     let settings = state.settings.read().clone();
-    
+
+    // Build correlation set before entering the blocking task.
+    let correlated = build_correlated_mashup_bases(
+        &settings.resource_pack_path,
+        &settings.skin_pack_path,
+        &settings.world_template_path,
+    );
+
     let pack_folders = vec![
         ("BehaviorPack", settings.behavior_pack_path.clone()),
         ("ResourcePack", settings.resource_pack_path.clone()),
@@ -1121,11 +1201,10 @@ async fn get_directory_folders(app: AppHandle) -> Result<Vec<PackInfo>, String> 
                 let entry_path = std::path::Path::new(&path);
                 let (uuid, display_name, version) = read_pack_metadata_fast(entry_path);
                 let icon = read_pack_icon(entry_path);
-                let name_lower = folder_name.to_lowercase();
-                let is_mashup = name_lower.contains("mashup")
-                    || name_lower.contains("mash-up")
-                    || name_lower.contains("mash up");
-                let pack_type = if is_mashup && pack_type_str == "WorldTemplate" {
+                // Only world template folders can be promoted to MashupPack.
+                // RP/SP/BP entries that share a name with a mashup keep their own type
+                // so the frontend can correctly group and display them as children.
+                let pack_type = if pack_type_str == "WorldTemplate" && is_mashup(&folder_name, &correlated) {
                     PackType::MashupPack
                 } else {
                     parse_pack_type(&pack_type_str)
@@ -1160,7 +1239,7 @@ async fn get_directory_folders(app: AppHandle) -> Result<Vec<PackInfo>, String> 
 fn read_pack_icon(folder_path: &std::path::Path) -> Option<String> {
     let icon_names = ["pack_icon.png", "Pack_Icon.png", "world_icon.jpeg", "world_icon.jpg", "icon.png"];
     const MAX_ICON_SIZE: u64 = 2 * 1024 * 1024;
-    
+
     for icon_name in &icon_names {
         let icon_path = folder_path.join(icon_name);
         if icon_path.exists() {
@@ -1168,11 +1247,17 @@ fn read_pack_icon(folder_path: &std::path::Path) -> Option<String> {
                 continue;
             }
             if let Ok(icon_data) = std::fs::read(&icon_path) {
-                return Some(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &icon_data));
+                let mime = if icon_name.ends_with(".jpg") || icon_name.ends_with(".jpeg") {
+                    "image/jpeg"
+                } else {
+                    "image/png"
+                };
+                let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &icon_data);
+                return Some(format!("data:{};base64,{}", mime, b64));
             }
         }
     }
-    
+
     None
 }
 
@@ -1327,16 +1412,22 @@ struct InstalledPackInfo {
 fn get_installed_packs_info(app: &AppHandle) -> Vec<InstalledPackInfo> {
     let state = app.state::<AppState>();
     let settings = state.settings.read().clone();
-    
+
+    let correlated = build_correlated_mashup_bases(
+        &settings.resource_pack_path,
+        &settings.skin_pack_path,
+        &settings.world_template_path,
+    );
+
     let pack_folders = vec![
         ("BehaviorPack", settings.behavior_pack_path.clone()),
-        ("ResourcePack", settings.resource_pack_path.clone()),
-        ("SkinPack", settings.skin_pack_path.clone()),
+        ("ResourcePack",  settings.resource_pack_path.clone()),
+        ("SkinPack",      settings.skin_pack_path.clone()),
         ("WorldTemplate", settings.world_template_path.clone()),
     ];
-    
+
     let mut installed_packs: Vec<InstalledPackInfo> = Vec::new();
-    
+
     for (pack_type_str, path_opt) in &pack_folders {
         if let Some(path_str) = path_opt {
             let path = std::path::Path::new(path_str);
@@ -1350,27 +1441,22 @@ fn get_installed_packs_info(app: &AppHandle) -> Vec<InstalledPackInfo> {
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("Unknown")
                                 .to_string();
-                            
+
                             let (uuid, display_name, version) = read_pack_metadata_fast(&entry_path);
-                            
-                            let name_lower = folder_name.to_lowercase();
-                            let is_mashup = name_lower.contains("mashup") 
-                                || name_lower.contains("mash-up") 
-                                || name_lower.contains("mash up");
-                            
-                            let pack_type = if is_mashup && pack_type_str == &"WorldTemplate" {
+
+                            let pack_type = if *pack_type_str == "WorldTemplate" && is_mashup(&folder_name, &correlated) {
                                 PackType::MashupPack
                             } else {
                                 parse_pack_type(pack_type_str)
                             };
-                            
+
                             installed_packs.push(InstalledPackInfo {
                                 uuid,
-                                name: display_name.clone().unwrap_or_else(|| folder_name.clone()),
+                                name: display_name.unwrap_or_else(|| folder_name.clone()),
                                 pack_type,
                                 version,
                                 path: entry_path.to_string_lossy().to_string(),
-                                folder_name: folder_name.clone(),
+                                folder_name,
                             });
                         }
                     }
@@ -1378,7 +1464,7 @@ fn get_installed_packs_info(app: &AppHandle) -> Vec<InstalledPackInfo> {
             }
         }
     }
-    
+
     installed_packs
 }
 

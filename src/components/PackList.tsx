@@ -35,7 +35,7 @@ function PackIcon({ pack }: { pack: PackInfo }) {
   if (pack.icon_base64) {
     return (
       <img
-        src={`data:image/png;base64,${pack.icon_base64}`}
+        src={pack.icon_base64}
         alt={pack.name}
         className="pack-icon-img"
       />
