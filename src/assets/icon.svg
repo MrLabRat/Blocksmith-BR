@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Background - Minecraft dirt/grass theme -->
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#7cb342;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#558b2f;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#33691e;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Main background -->
+  <rect width="256" height="256" fill="url(#grad1)"/>
+  
+  <!-- Grass texture blocks (top) -->
+  <rect x="0" y="0" width="64" height="32" fill="#7cb342"/>
+  <rect x="64" y="0" width="64" height="32" fill="#558b2f"/>
+  <rect x="128" y="0" width="64" height="32" fill="#7cb342"/>
+  <rect x="192" y="0" width="64" height="32" fill="#558b2f"/>
+  
+  <!-- Dirt blocks -->
+  <rect x="32" y="64" width="64" height="64" fill="#8d6e63"/>
+  <rect x="128" y="64" width="64" height="64" fill="#8d6e63"/>
+  
+  <!-- Stone blocks (bottom) -->
+  <rect x="64" y="160" width="64" height="64" fill="#757575"/>
+  <rect x="128" y="160" width="64" height="64" fill="#616161"/>
+  
+  <!-- Chest/container icon in center -->
+  <g transform="translate(128, 128)">
+    <!-- Chest body -->
+    <rect x="-40" y="-30" width="80" height="60" fill="#8b6f47" stroke="#6b5436" stroke-width="2"/>
+    
+    <!-- Chest lid -->
+    <rect x="-38" y="-28" width="76" height="20" fill="#a1826d" stroke="#6b5436" stroke-width="1.5"/>
+    
+    <!-- Lock/latch -->
+    <circle cx="0" cy="-18" r="3" fill="#d4a574"/>
+    
+    <!-- Chest opening -->
+    <rect x="-35" y="-8" width="70" height="35" fill="#2c2416" stroke="#4a3f35" stroke-width="1"/>
+    
+    <!-- Items inside (glowing effect) -->
+    <circle cx="-15" cy="5" r="4" fill="#ffeb3b" opacity="0.8"/>
+    <circle cx="0" cy="8" r="3" fill="#ffc107" opacity="0.7"/>
+    <circle cx="15" cy="4" r="4" fill="#ffeb3b" opacity="0.8"/>
+  </g>
+  
+  <!-- Pickaxe symbol (overlay) -->
+  <g transform="translate(200, 50)">
+    <!-- Pickaxe handle -->
+    <rect x="0" y="10" width="4" height="30" fill="#6b5436"/>
+    <!-- Pickaxe head -->
+    <rect x="-8" y="0" width="20" height="12" fill="#696969" stroke="#4a4a4a" stroke-width="1"/>
+  </g>
+</svg>

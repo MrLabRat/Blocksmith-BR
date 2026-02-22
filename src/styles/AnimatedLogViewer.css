@@ -1,0 +1,151 @@
+.log-viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: slideInRight 0.3s ease-out;
+  background-color: transparent;
+}
+
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+  background-color: transparent;
+}
+
+.log-header h3 {
+  font-size: 14px;
+  font-weight: 500;
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.log-container {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+  font-family: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+  font-size: 12px;
+  background-color: transparent;
+  line-height: 1.6;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-color) transparent;
+}
+
+.log-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.log-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.log-container::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+.log-container::-webkit-scrollbar-thumb:hover {
+  background: var(--border-color-light);
+}
+
+.log-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.log-entry {
+  padding: 4px 0;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  animation: fadeInUp 0.2s ease-out;
+  margin-bottom: 2px;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.log-level {
+  font-weight: 600;
+  min-width: 50px;
+  text-align: left;
+  text-transform: uppercase;
+  font-size: 11px;
+  padding: 0 6px;
+  border-radius: 3px;
+}
+
+.log-level.log-error {
+  color: var(--error-color);
+  background-color: var(--error-bg);
+}
+
+.log-level.log-warn {
+  color: var(--warning-color);
+  background-color: var(--warning-bg);
+}
+
+.log-level.log-info {
+  color: var(--primary-light);
+  background-color: var(--bg-panel);
+}
+
+.log-level.log-debug {
+  color: var(--text-muted);
+  background-color: var(--bg-panel);
+}
+
+.log-message {
+  color: var(--text-secondary);
+  flex: 1;
+  word-break: break-word;
+  font-family: inherit;
+}
+
+/* Cursor blink effect for typing */
+.log-message::after {
+  content: '|';
+  display: none;
+  animation: blink 1s infinite;
+}
+
+.log-entry:last-child .log-message::after {
+  display: inline;
+}
+
+@keyframes blink {
+  0%, 49% {
+    opacity: 1;
+  }
+  50%, 100% {
+    opacity: 0;
+  }
+}
