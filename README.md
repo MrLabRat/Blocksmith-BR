@@ -2,6 +2,8 @@
 
 A modern Minecraft Bedrock pack manager for Windows built with Tauri and React.
 
+> **Vibe-coded project** — every line of code in this repository is AI-generated. No human has written, reviewed, or audited the source code. As a result, there will be flaws, bugs, logic errors, and possible security vulnerabilities. Use at your own risk and do not run with elevated privileges.
+
 ## Overview
 
 Blocksmith is a desktop application that helps you organize, import, and manage Minecraft Bedrock Edition packs. It automatically detects your Minecraft Bedrock installation and provides an intuitive interface for handling Behavior Packs, Resource Packs, Skin Packs (including 4D geometry skins), World Templates, and Mash-up Packs.

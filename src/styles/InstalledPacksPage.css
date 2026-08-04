@@ -1,4 +1,4 @@
-.installed-packs-content {
+﻿.installed-packs-content {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -188,6 +188,18 @@
   contain: content;
 }
 
+.installed-packs-list.installed-packs-list-virtual {
+  display: block;
+  height: 560px;
+  max-height: 60vh;
+  gap: 0;
+  width: 100%;
+}
+
+.installed-packs-list-scroller {
+  scrollbar-width: thin;
+}
+
 .installed-packs-list::-webkit-scrollbar {
   width: 8px;
 }
@@ -219,7 +231,7 @@
   overflow: hidden;
 }
 
-/* Pack icon used as row background — visible but text stays readable */
+/* Pack icon used as row background â€” visible but text stays readable */
 .installed-pack-card .pack-row-bg {
   position: absolute;
   inset: 0;
@@ -485,7 +497,7 @@
   50% { opacity: 0.6; }
 }
 
-/* ── View toggle button ────────────────────────────────────── */
+/* â”€â”€ View toggle button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .view-toggle-btn {
   padding: 8px 12px;
   background-color: var(--bg-card);
@@ -511,7 +523,7 @@
   color: var(--text-primary);
 }
 
-/* ── Grid layout ───────────────────────────────────────────── */
+/* â”€â”€ Grid layout â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .packs-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(160px, 100%), 1fr));
@@ -525,7 +537,7 @@
 .packs-grid::-webkit-scrollbar-track { background: transparent; }
 .packs-grid::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
 .packs-grid::-webkit-scrollbar-thumb:hover { background: var(--border-color-light); }
-/* Each card — simple flex column, no tricks */
+/* Each card â€” simple flex column, no tricks */
 .pack-grid-card {
   display: flex;
   flex-direction: column;
@@ -546,7 +558,7 @@
   border-color: var(--primary-color);
 }
 
-/* Thumbnail — square via aspect-ratio directly on the container,
+/* Thumbnail â€” square via aspect-ratio directly on the container,
    with the img filling it via object-fit. No absolute positioning needed. */
 .pack-grid-thumb {
   position: relative;
@@ -573,7 +585,7 @@
   justify-content: center;
 }
 
-/* Delete button — shown on hover */
+/* Delete button â€” shown on hover */
 .pack-grid-del {
   position: absolute;
   top: 4px;
@@ -644,7 +656,7 @@
   flex-shrink: 0;
 }
 
-/* Full-width expanded children panel — spans all grid columns */
+/* Full-width expanded children panel â€” spans all grid columns */
 .packs-grid-children-panel {
   grid-column: 1 / -1;
   background-color: var(--bg-card);
@@ -725,7 +737,7 @@
   white-space: nowrap;
 }
 
-/* ── Progress bar (initial loading) ─────────────────────── */
+/* â”€â”€ Progress bar (initial loading) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .packs-loading-bar {
   display: flex;
   flex-direction: column;
@@ -759,4 +771,83 @@
 .progress-bar-counts {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+/* ── Duplicate detection modal ──────────────────────────── */
+.duplicate-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.duplicate-group {
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.duplicate-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.duplicate-group-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.duplicate-group-uuid {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: monospace;
+  flex-shrink: 0;
+}
+
+.duplicate-pack-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.duplicate-pack-row:last-child {
+  border-bottom: none;
+}
+
+.duplicate-pack-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.duplicate-pack-type {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.duplicate-pack-folder {
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 400px;
 }

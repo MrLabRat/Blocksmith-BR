@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Menu, X, HelpCircle, Info, RotateCcw, Trash2, Package } from 'lucide-react';
+import { Menu, X, HelpCircle, Info, RotateCcw, Trash2, Package, Recycle } from 'lucide-react';
 import '../styles/HamburgerMenu.css';
 
 interface HamburgerMenuProps {
@@ -8,9 +8,10 @@ interface HamburgerMenuProps {
   onShowStats: () => void;
   onShowInstalledPacks: () => void;
   onShowHelp: () => void;
+  onShowRecycleBin: () => void;
 }
 
-export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShowInstalledPacks, onShowHelp }: HamburgerMenuProps) {
+export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShowInstalledPacks, onShowHelp, onShowRecycleBin }: HamburgerMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -44,6 +45,11 @@ export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShow
     onShowHelp();
   };
 
+  const handleShowRecycleBin = () => {
+    setIsOpen(false);
+    onShowRecycleBin();
+  };
+
   return (
     <div className="hamburger-menu">
       <button 
@@ -69,6 +75,10 @@ export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShow
             <button className="menu-item" onClick={handleShowHelp}>
               <HelpCircle size={18} />
               <span>Help & Feedback</span>
+            </button>
+            <button className="menu-item" onClick={handleShowRecycleBin}>
+              <Recycle size={18} />
+              <span>Recycle Bin</span>
             </button>
             <button className="menu-item" onClick={handleRestart}>
               <RotateCcw size={18} />

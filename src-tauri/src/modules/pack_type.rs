@@ -35,6 +35,9 @@ pub struct PackInfo {
     pub extracted: bool,
     pub icon_base64: Option<String>,
     pub subfolder: Option<String>,
+    /// Set when this pack's payload is a nested `.mcpack` zip entry inside a `.mcaddon`
+    /// (rather than a loose folder) — holds that entry's exact archive path.
+    pub nested_mcpack: Option<String>,
     pub folder_size: Option<u64>,
     pub folder_size_formatted: Option<String>,
     pub needs_attention: Option<bool>,
@@ -54,6 +57,7 @@ pub struct Settings {
     pub scan_location: Option<String>,
     pub dry_run: bool,
     pub delete_source: bool,
+    pub delete_file_on_remove: Option<bool>,
     pub disable_animations: Option<bool>,
     pub animation_speed_ms: Option<u32>,
     pub ui_scale: Option<u32>,
@@ -67,6 +71,8 @@ pub struct Settings {
     pub background_style: Option<String>,
     pub background_smoke: Option<u32>,
     pub background_blobs: Option<u32>,
+    pub delete_old_on_update: Option<bool>,
+    pub remember_scan_location: Option<bool>,
 }
 
 impl Default for Settings {
@@ -80,6 +86,7 @@ impl Default for Settings {
             scan_location: None,
             dry_run: false,
             delete_source: false,
+            delete_file_on_remove: Some(true),
             disable_animations: Some(false),
             animation_speed_ms: Some(300),
             ui_scale: Some(100),
@@ -93,6 +100,8 @@ impl Default for Settings {
             background_style: Some("embers".to_string()),
             background_smoke: Some(5),
             background_blobs: Some(5),
+            delete_old_on_update: Some(true),
+            remember_scan_location: Some(true),
         }
     }
 }

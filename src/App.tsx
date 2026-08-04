@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { save } from '@tauri-apps/plugin-dialog';
 import { PackInfo, Settings as SettingsType, LogEntry, ProgressEvent, MoveOperation, getPackKey, PackType, AppNotification } from './types';
+import { getBestDisplayName } from './utils/packUtils';
 import { AnimatedLogViewer } from './components/AnimatedLogViewer';
 import { PackList } from './components/PackList';
 import { Settings, SettingsButton } from './components/Settings';
@@ -10,10 +12,11 @@ import { HamburgerMenu } from './components/HamburgerMenu';
 import { StatisticsPage } from './components/StatisticsPage';
 import { InstalledPacksPage } from './components/InstalledPacksPage';
 import { HelpPage } from './components/HelpPage';
+import { RecycleBinPage } from './components/RecycleBinPage';
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { Notifications, createNotification } from './components/Notifications';
 import { ConfirmDialog } from './components/ConfirmDialog';
-import { Package, X, CheckCircle, XCircle, FolderOpen, ExternalLink, Copy, ChevronDown, Globe } from 'lucide-react';
+import { Package, X, CheckCircle, XCircle, FolderOpen, ExternalLink, Copy, ChevronDown, Globe, Eye, Download } from 'lucide-react';
 import './App.css';
 
 const friendlyLogMessages = [
@@ -50,6 +53,18 @@ const tipMessages = [
   "The Installed Packs page lets you browse and delete packs already in Minecraft.",
   "Dry Run logs show exactly what would happen without touching any files.",
   "Debug Mode in Settings shows detailed logs for troubleshooting.",
+  "The 'Delete Source' toggle removes the original .mcpack or .mcaddon after a successful extraction.",
+  "Dry Run mode shows exactly what would happen without touching any files — useful before bulk installs.",
+  "Installed packs can be deleted from the Installed Packs page — hold Shift to skip the confirmation.",
+  "A .mcaddon file can contain both a behaviour pack and a resource pack — Blocksmith splits them automatically.",
+  "World templates bundle their internal packs as a single unit and won't show duplicate BP/RP entries.",
+  "The Statistics page breaks down total disk usage by pack type.",
+  "You can open the destination folder directly from the results modal after an extraction.",
+  "Ctrl+Z rolls back the last extraction if you change your mind.",
+  "Mash-up packs are detected by their filename containing 'mashup' or by bundling a WT, RP, and BP together.",
+  "Blocksmith detects 4D skin packs automatically by looking for geometry.json inside the archive.",
+  "Version numbers are stripped from pack names when comparing installed versions, so '1.8' and '1.8.1' match correctly.",
+  "The orange 'Update' badge means Blocksmith found the same pack installed but with a different version.",
 ];
 
 const packTypes: (PackType | 'All')[] = ['All', 'BehaviorPack', 'ResourcePack', 'SkinPack', 'SkinPack4D', 'WorldTemplate'];
@@ -61,6 +76,8 @@ const packTypeLabels: Record<string, string> = {
   'SkinPack4D': 'Skin Packs (4D)',
   'WorldTemplate': 'World Templates',
 };
+
+const MAX_LOG_ENTRIES = 500;
 
 function App() {
   const handleMinimize = async () => {
@@ -89,7 +106,7 @@ function App() {
   // Core pack data
   const [packs, setPacks] = useState<PackInfo[]>([]);
   const [selectedPacks, setSelectedPacks] = useState<Set<string>>(new Set());
-  const [settings, setSettings] = useState<SettingsType>({ dry_run: false, delete_source: false });
+  const [settings, setSettings] = useState<SettingsType>({ dry_run: false, delete_source: false, delete_file_on_remove: true });
   const debugModeRef = useRef(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isScanning, setIsScanning] = useState(false);
@@ -104,12 +121,23 @@ function App() {
   const [showStats, setShowStats] = useState(false);
   const [showInstalledPacks, setShowInstalledPacks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showRecycleBin, setShowRecycleBin] = useState(false);
   const [logPanelOpen, setLogPanelOpen] = useState(true);
   const [selectedPackType, setSelectedPackType] = useState<PackType | 'All'>('All');
   const [packTypeDropdownOpen, setPackTypeDropdownOpen] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const [toolcoinInstalled, setToolcoinInstalled] = useState(false);
-  const [confirmState, setConfirmState] = useState<{ title: string; message: string; detail?: string; onConfirm: () => void } | null>(null);
+  const [confirmState, setConfirmState] = useState<{ title: string; message: string; detail?: string; confirmLabel?: string; onConfirm: () => void; onCancel?: () => void } | null>(null);
+  const [showExportDropdown, setShowExportDropdown] = useState(false);
+  const [previewPack, setPreviewPack] = useState<{ pack: { path: string; name: string; subfolder?: string } } | null>(null);
+  const [previewFiles, setPreviewFiles] = useState<string[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [newPackPaths, setNewPackPaths] = useState<Set<string>>(new Set());
+  const packsRef = useRef<PackInfo[]>([]);
+  const newFilesDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoScanInFlightRef = useRef(false);
+  const newPackNamesRef = useRef<Map<string, string>>(new Map()); // path → display name, accumulated
+  const newPacksNotifIdRef = useRef<string | null>(null);
 
   const addNotification = useCallback((type: AppNotification['type'], title: string, message: string) => {
     setNotifications(prev => [...prev, createNotification(type, title, message)]);
@@ -172,7 +200,7 @@ function App() {
 
     const unlistenLog = listen<LogEntry>('log', (event) => {
       const log = event.payload;
-      setLogs((prev) => [...prev, log]);
+      setLogs((prev) => [...prev.slice(-(MAX_LOG_ENTRIES - 1)), log]);
       
       // Show notification for errors when debug mode is off
       if (log.level === 'ERROR' && !debugModeRef.current) {
@@ -200,6 +228,9 @@ function App() {
           menu.classList.remove('open');
         });
       }
+      if (!target.closest('.export-dropdown-wrapper')) {
+        setShowExportDropdown(false);
+      }
     };
     window.addEventListener('click', handleClickOutside);
     return () => window.removeEventListener('click', handleClickOutside);
@@ -226,6 +257,45 @@ function App() {
     setPacks((prev) => prev.filter((p) => !selectedPacks.has(getPackKey(p))));
     setSelectedPacks(new Set());
   }, [selectedPacks]);
+
+  // Detects when the currently selected packs contain multiple different versions
+  // of the same pack (matched by UUID). Processing both would just overwrite one
+  // with the other, so we warn and let the user confirm before continuing.
+  const handleBeforeProcess = useCallback((selectedPacksList: PackInfo[]): Promise<boolean> => {
+    const byUuid = new Map<string, PackInfo[]>();
+    for (const p of selectedPacksList) {
+      if (!p.uuid) continue;
+      if (!byUuid.has(p.uuid)) byUuid.set(p.uuid, []);
+      byUuid.get(p.uuid)!.push(p);
+    }
+
+    const conflicts = Array.from(byUuid.values()).filter((group) => {
+      if (group.length < 2) return false;
+      const versions = new Set(group.map((p) => p.version || 'unknown'));
+      return versions.size > 1;
+    });
+
+    if (conflicts.length === 0) {
+      return Promise.resolve(true);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      const detail = conflicts
+        .map((group) => `${group[0].name}: ${group.map((p) => p.version || 'unknown').join(' vs ')}`)
+        .join('\n');
+      setConfirmState({
+        title: 'Conflicting Pack Versions Selected',
+        message: `${conflicts.length} selected pack${conflicts.length > 1 ? 's share' : ' shares'} the same UUID with a different version selected at the same time. Processing both may cause one to overwrite the other.`,
+        detail,
+        confirmLabel: 'Continue Anyway',
+        onConfirm: () => {
+          setConfirmState(null);
+          resolve(true);
+        },
+        onCancel: () => resolve(false),
+      });
+    });
+  }, []);
 
   const handleDeleteFromDisk = useCallback((pack: PackInfo) => {
     setConfirmState({
@@ -261,17 +331,25 @@ function App() {
       detail: paths,
       onConfirm: async () => {
         setConfirmState(null);
+        // Multiple selected packs (e.g. the Behavior Pack + Resource Pack halves of
+        // the same .mcaddon) can share the same underlying source file path -- only
+        // attempt to delete each unique file once, or the 2nd attempt fails with
+        // "File does not exist" since the 1st attempt already removed it.
+        const uniquePaths = Array.from(new Set(selectedList.map((p) => p.path)));
+        const failedPaths = new Set<string>();
         const errors: string[] = [];
-        for (const pack of selectedList) {
+        for (const path of uniquePaths) {
           try {
-            await invoke('delete_source_file', { path: pack.path });
+            await invoke('delete_source_file', { path });
           } catch (error) {
-            errors.push(`${pack.name}: ${error}`);
+            failedPaths.add(path);
+            const packName = selectedList.find((p) => p.path === path)?.name || path;
+            errors.push(`${packName}: ${error}`);
           }
         }
         const deletedKeys = new Set(
           selectedList
-            .filter((p) => !errors.some((e) => e.startsWith(p.name + ':')))
+            .filter((p) => !failedPaths.has(p.path))
             .map(getPackKey)
         );
         setPacks((prev) => prev.filter((p) => !deletedKeys.has(getPackKey(p))));
@@ -283,7 +361,7 @@ function App() {
         if (errors.length > 0) {
           addNotification('error', 'Some Deletions Failed', errors.join('\n'));
         } else {
-          addNotification('success', 'Files Deleted', `${deletedKeys.size} file${deletedKeys.size > 1 ? 's' : ''} deleted from disk.`);
+          addNotification('success', 'Files Deleted', `${uniquePaths.length} file${uniquePaths.length > 1 ? 's' : ''} deleted from disk.`);
         }
       },
     });
@@ -338,6 +416,9 @@ function App() {
   const handleScanComplete = useCallback((newPacks: PackInfo[]) => {
     setPacks(newPacks);
     setSelectedPacks(new Set());
+    setNewPackPaths(new Set());
+    newPackNamesRef.current.clear();
+    newPacksNotifIdRef.current = null;
     setProgress(null);
     setIsScanning(false);
     if (newPacks.length > 0) {
@@ -373,15 +454,15 @@ function App() {
   }, []);
 
   // File/Folder handlers
-  const handleOpenFolder = async (path: string) => {
+  const handleOpenFolder = useCallback(async (path: string) => {
     try {
       await invoke('open_folder', { path });
     } catch (error) {
       console.error('Failed to open folder:', error);
     }
-  };
+  }, []);
 
-  const handleCopyPath = async (path: string) => {
+  const handleCopyPath = useCallback(async (path: string) => {
     try {
       await navigator.clipboard.writeText(path);
       setCopiedPath(path);
@@ -389,7 +470,27 @@ function App() {
     } catch (error) {
       console.error('Failed to copy to clipboard:', error);
     }
-  };
+  }, []);
+
+  // Pack preview
+  const handlePreviewPack = useCallback(async (pack: PackInfo) => {
+    setPreviewPack({ pack: { path: pack.path, name: pack.name, subfolder: pack.subfolder } });
+    setPreviewFiles([]);
+    setPreviewLoading(true);
+    try {
+      const files = await invoke<string[]>('list_archive_files', {
+        path: pack.path,
+        subfolder: pack.subfolder ?? null,
+        nestedMcpack: pack.nested_mcpack ?? null,
+      });
+      setPreviewFiles(files);
+    } catch (err) {
+      addNotification('error', 'Preview Failed', `${err}`);
+      setPreviewPack(null);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, [addNotification]);
 
   // 4D skin handling
   const handleOpenSkinMaster = async () => {
@@ -445,8 +546,53 @@ function App() {
     return matchesType && matchesSearch;
   }), [packs, selectedPackType, searchFilter]);
 
+  // Export pack list
+  const exportPacksCSV = useCallback(async () => {
+    const headers = 'Name,Type,UUID,Version,Size\n';
+    const csvEscape = (value: string) => {
+      const safeValue = /^[=+\-@]/.test(value.trimStart()) ? `'${value}` : value;
+      return `"${safeValue.replace(/"/g, '""')}"`;
+    };
+    const rows = filteredPacks.map(p =>
+      [
+        csvEscape(getBestDisplayName(p)),
+        csvEscape(p.pack_type),
+        csvEscape(p.uuid || ''),
+        csvEscape(p.version || ''),
+        csvEscape(p.folder_size_formatted || ''),
+      ].join(',')
+    ).join('\n');
+    const path = await save({
+      defaultPath: 'packs.csv',
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    });
+    if (path) await invoke('write_export_file', { path, content: headers + rows, extension: 'csv' });
+    setShowExportDropdown(false);
+  }, [filteredPacks]);
+
+  const exportPacksJSON = useCallback(async () => {
+    const data = filteredPacks.map(p => ({
+      name: getBestDisplayName(p),
+      type: p.pack_type,
+      uuid: p.uuid || null,
+      version: p.version || null,
+      size: p.folder_size_formatted || null,
+      path: p.path,
+    }));
+    const path = await save({
+      defaultPath: 'packs.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (path) await invoke('write_export_file', { path, content: JSON.stringify(data, null, 2), extension: 'json' });
+    setShowExportDropdown(false);
+  }, [filteredPacks]);
+
   const handleSelectAll = useCallback(() => {
     setSelectedPacks(new Set(filteredPacks.map(getPackKey)));
+  }, [filteredPacks]);
+
+  const handleSelectUpdates = useCallback(() => {
+    setSelectedPacks(new Set(filteredPacks.filter((p) => p.is_update).map(getPackKey)));
   }, [filteredPacks]);
 
   // Keyboard shortcuts
@@ -493,6 +639,94 @@ function App() {
     };
   }, [adjustScale, resetScale, handleSelectAll, handleDeselectAll, removeSelectedPacks]);
 
+  // Keep packsRef in sync for use inside interval callbacks
+  useEffect(() => { packsRef.current = packs; }, [packs]);
+
+  // Auto-detect new packs dropped into the scan folder
+  useEffect(() => {
+    if (!settings.scan_location) return;
+    const scanLocation = settings.scan_location;
+
+    const processNewFiles = async () => {
+      if (autoScanInFlightRef.current) return;
+      autoScanInFlightRef.current = true;
+      newFilesDebounceRef.current = null;
+      const knownPaths = new Set(packsRef.current.map(p => p.path));
+      try {
+        const allPacks = await invoke<PackInfo[]>('scan_packs', { directory: scanLocation });
+        const newPacks = allPacks.filter(p => !knownPaths.has(p.path));
+        if (newPacks.length === 0) return;
+
+        setPacks(prev => {
+          const existingKeys = new Set(prev.map(getPackKey));
+          return [...prev, ...newPacks.filter(pack => !existingKeys.has(getPackKey(pack)))];
+        });
+        setNewPackPaths(prev => {
+          const next = new Set(prev);
+          newPacks.forEach(p => next.add(p.path));
+          return next;
+        });
+
+        // Accumulate names across multiple detections
+        const uniqueNewFiles = [...new Set(newPacks.map(p => p.path))];
+        uniqueNewFiles.forEach(fp => {
+          if (!newPackNamesRef.current.has(fp)) {
+            const name = getBestDisplayName(newPacks.find(p => p.path === fp)!);
+            newPackNamesRef.current.set(fp, name.length > 30 ? name.slice(0, 28) + '\u2026' : name);
+          }
+        });
+
+        // Replace the single running notification with the full accumulated list
+        const allNames = [...newPackNamesRef.current.values()];
+        const shown = allNames.slice(0, 5);
+        const overflow = allNames.length - shown.length;
+        const messageBody = overflow > 0 ? `${shown.join(', ')} +${overflow} more` : shown.join(', ');
+        const notif = createNotification(
+          'info',
+          `${allNames.length} New Pack${allNames.length !== 1 ? 's' : ''} Detected`,
+          messageBody
+        );
+        const prevId = newPacksNotifIdRef.current;
+        setNotifications(prev =>
+          (prevId ? prev.filter(n => n.id !== prevId) : prev).concat(notif)
+        );
+        newPacksNotifIdRef.current = notif.id;
+        invoke<PackInfo[]>('compute_pack_status', { packs: newPacks })
+          .then(updated => {
+            const updatedMap = new Map(updated.map(p => [p.path, p]));
+            setPacks(prev => prev.map(p => updatedMap.get(p.path) ?? p));
+          })
+          .catch(() => {});
+      } catch {
+      } finally {
+        autoScanInFlightRef.current = false;
+      }
+    };
+
+    const interval = setInterval(async () => {
+      if (autoScanInFlightRef.current) return;
+      try {
+        const files = await invoke<string[]>('list_mc_files_in_dir', { directory: scanLocation });
+        const knownPaths = new Set(packsRef.current.map(p => p.path));
+        const newFiles = files.filter(f => !knownPaths.has(f));
+        if (newFiles.length === 0) return;
+
+        // Reset debounce each time new files appear, so we wait for the full batch to arrive
+        if (newFilesDebounceRef.current) clearTimeout(newFilesDebounceRef.current);
+        newFilesDebounceRef.current = setTimeout(processNewFiles, 3000);
+      } catch { }
+    }, 2000);
+
+    return () => {
+      clearInterval(interval);
+      if (newFilesDebounceRef.current) {
+        clearTimeout(newFilesDebounceRef.current);
+        newFilesDebounceRef.current = null;
+      }
+      autoScanInFlightRef.current = false;
+    };
+  }, [settings.scan_location, addNotification]);
+
   // Results calculations
   const selectedCount = selectedPacks.size;
   const totalCount = packs.length;
@@ -517,16 +751,28 @@ function App() {
     }
   }, [isScanning, isMoving, settings.debug_mode]);
 
+  const tipQueueRef = useRef<string[]>([]);
+  const getNextTip = useCallback(() => {
+    if (tipQueueRef.current.length === 0) {
+      const shuffled = [...tipMessages];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+      tipQueueRef.current = shuffled;
+    }
+    return tipQueueRef.current.shift()!;
+  }, []);
+
   useEffect(() => {
     if (settings.disable_tip_notifications) return;
     const interval = setInterval(() => {
       if (Math.random() < 0.35) {
-        const tip = tipMessages[Math.floor(Math.random() * tipMessages.length)];
-        addTipNotification(tip);
+        addTipNotification(getNextTip());
       }
     }, 120000);
     return () => clearInterval(interval);
-  }, [settings.disable_tip_notifications, addTipNotification]);
+  }, [settings.disable_tip_notifications, addTipNotification, getNextTip]);
 
   const animationClass = useMemo(() => {
     if (settings.disable_animations) return 'animations-disabled';
@@ -596,6 +842,7 @@ function App() {
               onShowStats={() => setShowStats(true)}
               onShowInstalledPacks={() => setShowInstalledPacks(true)}
               onShowHelp={() => setShowHelp(true)}
+              onShowRecycleBin={() => setShowRecycleBin(true)}
             />
           </div>
           <div className="window-controls">
@@ -631,6 +878,7 @@ function App() {
             onMoveStart={handleMoveStart}
             onMoveComplete={handleMoveComplete}
             onError={(title, message) => addNotification('error', title, message)}
+            onBeforeProcess={handleBeforeProcess}
           />
 
           {settings.dry_run && (
@@ -687,6 +935,28 @@ function App() {
                     {selectedCount} of {filteredPacks.length} selected
                   </span>
                 )}
+                {filteredPacks.length > 0 && (
+                  <div className="export-dropdown-wrapper">
+                    <button
+                      className="btn btn-small"
+                      onClick={() => setShowExportDropdown(prev => !prev)}
+                      title="Export pack list"
+                    >
+                      <Download size={13} style={{ marginRight: 4 }} />
+                      Export
+                    </button>
+                    {showExportDropdown && (
+                      <div className="export-dropdown-menu">
+                        <button className="export-dropdown-item" onClick={exportPacksCSV}>
+                          Export as CSV
+                        </button>
+                        <button className="export-dropdown-item" onClick={exportPacksJSON}>
+                          Export as JSON
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             <PackList
@@ -695,10 +965,14 @@ function App() {
               onTogglePack={handleTogglePack}
               onSelectAll={handleSelectAll}
               onDeselectAll={handleDeselectAll}
+              onSelectUpdates={handleSelectUpdates}
               onRemove={handleRemovePack}
               onRemoveSelected={removeSelectedPacks}
               onDeleteFromDisk={handleDeleteFromDisk}
               onDeleteSelectedFromDisk={handleDeleteSelectedFromDisk}
+              onPreview={handlePreviewPack}
+              newPackPaths={newPackPaths}
+              deleteFileOnRemove={settings.delete_file_on_remove ?? true}
             />
           </div>
 
@@ -899,17 +1173,122 @@ function App() {
       {/* Help & Feedback Modal */}
       {showHelp && <HelpPage onClose={() => setShowHelp(false)} />}
 
+      {/* Recycle Bin Modal */}
+      {showRecycleBin && <RecycleBinPage onClose={() => setShowRecycleBin(false)} addNotification={addNotification} />}
+
       {/* Confirm Dialog */}
       {confirmState && (
         <ConfirmDialog
           title={confirmState.title}
           message={confirmState.message}
           detail={confirmState.detail}
-          confirmLabel="Delete"
+          confirmLabel={confirmState.confirmLabel ?? 'Delete'}
           onConfirm={confirmState.onConfirm}
-          onCancel={() => setConfirmState(null)}
+          onCancel={() => {
+            confirmState.onCancel?.();
+            setConfirmState(null);
+          }}
         />
       )}
+
+      {/* Pack Preview Modal */}
+      {previewPack && (
+        <div className="modal-overlay" onClick={() => setPreviewPack(null)}>
+          <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                <Eye size={16} style={{ marginRight: 8 }} />
+                Preview: {previewPack.pack.name}
+              </h3>
+              <button className="btn btn-icon" onClick={() => setPreviewPack(null)}>
+                <X size={20} />
+              </button>
+            </div>
+            <div className="modal-content">
+              {previewLoading ? (
+                <div style={{ padding: '24px', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                  Reading archive...
+                </div>
+              ) : (
+                <PreviewFileTree files={previewFiles} />
+              )}
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-primary" onClick={() => setPreviewPack(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface TreeNode {
+  name: string;
+  children: Map<string, TreeNode>;
+  isFile: boolean;
+}
+
+function buildTree(files: string[]): TreeNode {
+  const root: TreeNode = { name: '', children: new Map(), isFile: false };
+  for (const file of files) {
+    const parts = file.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (!node.children.has(part)) {
+        node.children.set(part, { name: part, children: new Map(), isFile: i === parts.length - 1 });
+      }
+      node = node.children.get(part)!;
+    }
+  }
+  return root;
+}
+
+function TreeNodeRow({ node, depth }: { node: TreeNode; depth: number }) {
+  const [expanded, setExpanded] = useState(depth < 1);
+  const isDir = !node.isFile && node.children.size > 0;
+  const children = Array.from(node.children.values()).sort((a, b) => {
+    if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return (
+    <>
+      <div
+        className={`preview-tree-row${isDir ? ' preview-tree-dir' : ''}`}
+        style={{ paddingLeft: depth * 16 + 8 }}
+        onClick={() => isDir && setExpanded(e => !e)}
+      >
+        <span className="preview-tree-icon">
+          {isDir ? (expanded ? '▼' : '▶') : '·'}
+        </span>
+        <span className="preview-tree-name">{node.name}{!node.isFile && node.children.size > 0 ? '/' : ''}</span>
+      </div>
+      {isDir && expanded && children.map(child => (
+        <TreeNodeRow key={child.name} node={child} depth={depth + 1} />
+      ))}
+    </>
+  );
+}
+
+function PreviewFileTree({ files }: { files: string[] }) {
+  const tree = useMemo(() => buildTree(files), [files]);
+  const topLevel = Array.from(tree.children.values()).sort((a, b) => {
+    if (a.isFile !== b.isFile) return a.isFile ? 1 : -1;
+    return a.name.localeCompare(b.name);
+  });
+
+  if (files.length === 0) {
+    return <div style={{ padding: '16px', color: 'var(--text-secondary)' }}>Archive is empty.</div>;
+  }
+
+  return (
+    <div className="preview-file-tree">
+      <div className="preview-file-count">{files.filter(f => !f.endsWith('/')).length} files</div>
+      {topLevel.map(node => (
+        <TreeNodeRow key={node.name} node={node} depth={0} />
+      ))}
     </div>
   );
 }

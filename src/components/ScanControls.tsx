@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
+import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { PackInfo, Settings, MoveOperation, ProgressEvent, getPackKey } from '../types';
-import { Scan, Package, Undo2, Loader2 } from 'lucide-react';
+import { Scan, Package, Undo2, Loader2, XCircle } from 'lucide-react';
 
 function formatTime(seconds: number): string {
   if (seconds < 60) {
@@ -30,6 +31,7 @@ interface ScanControlsProps {
   onMoveStart: () => void;
   onMoveComplete: (results?: MoveOperation[]) => void;
   onError?: (title: string, message: string) => void;
+  onBeforeProcess?: (packs: PackInfo[]) => Promise<boolean>;
 }
 
 export function ScanControls({
@@ -44,14 +46,61 @@ export function ScanControls({
   onMoveStart,
   onMoveComplete,
   onError,
+  onBeforeProcess,
 }: ScanControlsProps) {
   const [sourcePath, setSourcePath] = useState<string>('');
+  const [isDragOver, setIsDragOver] = useState(false);
 
   useEffect(() => {
     if (settings.scan_location) {
       setSourcePath(settings.scan_location);
     }
   }, [settings.scan_location]);
+
+  // Allow dropping a folder (or one or more pack files) anywhere on the app window to
+  // trigger a scan, instead of requiring the user to Browse for a directory every time.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    (async () => {
+      const webview = getCurrentWebview();
+      const stop = await webview.onDragDropEvent((event) => {
+        if (event.payload.type === 'over' || event.payload.type === 'enter') {
+          setIsDragOver(true);
+        } else if (event.payload.type === 'leave') {
+          setIsDragOver(false);
+        } else if (event.payload.type === 'drop') {
+          setIsDragOver(false);
+          const paths = event.payload.paths;
+          if (paths.length === 0 || isScanning || isMoving) return;
+          void handleDroppedPaths(paths);
+        }
+      });
+      if (cancelled) {
+        stop();
+      } else {
+        unlisten = stop;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isScanning, isMoving]);
+
+  const handleDroppedPaths = async (paths: string[]) => {
+    try {
+      const directory = await invoke<string>('resolve_scan_directory', { paths });
+      setSourcePath(directory);
+      await performScan(directory);
+    } catch (error) {
+      console.error('Failed to resolve dropped path:', error);
+      onError?.('Drag & Drop Failed', `${error}`);
+    }
+  };
 
   const handleSelectDirectory = async () => {
     const selected = await open({
@@ -96,14 +145,28 @@ export function ScanControls({
   const handleProcess = async () => {
     if (selectedPacks.size === 0) return;
 
+    const selectedPacksList = packs.filter((p) => selectedPacks.has(getPackKey(p)));
+
+    if (onBeforeProcess) {
+      const shouldContinue = await onBeforeProcess(selectedPacksList);
+      if (!shouldContinue) return;
+    }
+
     onMoveStart();
     try {
-      const selectedPacksList = packs.filter((p) => selectedPacks.has(getPackKey(p)));
       const results = await invoke<MoveOperation[]>('process_packs', { packs: selectedPacksList });
       onMoveComplete(results);
     } catch (error) {
       console.error('Process failed:', error);
       onMoveComplete();
+    }
+  };
+
+  const handleCancel = async () => {
+    try {
+      await invoke('request_cancel');
+    } catch (error) {
+      console.error('Cancel request failed:', error);
     }
   };
 
@@ -120,7 +183,13 @@ export function ScanControls({
   };
 
   return (
-    <div className="scan-controls">
+    <div className={`scan-controls${isDragOver ? ' scan-controls-drag-over' : ''}`}>
+      {isDragOver && (
+        <div className="scan-drag-overlay">
+          <Package size={28} />
+          <span>Drop a folder or pack files to scan</span>
+        </div>
+      )}
       <div className="scan-input">
         <input
           type="text"
@@ -175,6 +244,17 @@ export function ScanControls({
           <Undo2 size={18} />
           Rollback
         </button>
+
+        {(isScanning || isMoving) && (
+          <button
+            className="btn btn-danger"
+            onClick={handleCancel}
+            title="Cancel the current scan or process operation"
+          >
+            <XCircle size={18} />
+            Cancel
+          </button>
+        )}
       </div>
 
       {progress && (isScanning || isMoving) && progress.total > 0 && (

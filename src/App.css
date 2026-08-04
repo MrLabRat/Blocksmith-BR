@@ -2,6 +2,16 @@
    THEME SYSTEM
    ============================================ */
 
+/* Minecraft's actual in-game font, self-hosted from public/fonts so it loads
+   under the strict `font-src 'self'` CSP (no external CDN request). */
+@font-face {
+  font-family: 'Minecraft';
+  src: url('/fonts/Minecraft.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* Dark Red Theme (Default) */
 :root,
 [data-theme="darkred"] {
@@ -129,7 +139,7 @@
   --scrollbar-track: rgba(50, 50, 50, 0.3);
   
   /* Font */
-  --font-family: 'Minecraft', 'Courier New', monospace;
+  --font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 /* High DPI adjustments */
@@ -206,12 +216,20 @@ body {
   background-color: transparent;
 }
 
+/* Form controls don't inherit the body font-family by default in the browser's
+   UA stylesheet, so without this the Minecraft theme's font only applied to
+   plain text (headings/labels) and not buttons/inputs/selects/textareas. */
+button, input, select, textarea {
+  font-family: inherit;
+}
+
 .app {
   display: flex;
   flex-direction: column;
   height: 100vh;
   overflow: hidden;
   position: relative;
+  background-color: var(--bg-primary);
 }
 
 .app-background {
@@ -784,6 +802,30 @@ body {
   gap: 12px;
   align-items: center;
   flex-wrap: wrap;
+  position: relative;
+}
+
+.scan-controls-drag-over {
+  outline: 2px dashed var(--primary-color);
+  outline-offset: 4px;
+  border-radius: var(--border-radius);
+}
+
+.scan-drag-overlay {
+  position: absolute;
+  inset: -8px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background-color: rgba(0, 0, 0, 0.7);
+  border-radius: var(--border-radius);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
 }
 
 .scan-input {
@@ -934,6 +976,12 @@ body {
   background-color: rgba(100, 70, 20, 0.3);
   color: #e0a040;
   border: 1px solid rgba(120, 90, 30, 0.4);
+}
+
+.pack-status-badge.new-pack {
+  background-color: rgba(20, 80, 120, 0.3);
+  color: #50b0e0;
+  border: 1px solid rgba(30, 100, 150, 0.4);
 }
 
 .pack-group-children {
@@ -1292,11 +1340,13 @@ body {
   display: flex;
   gap: 4px;
   flex: 1;
+  min-width: 0;
   max-width: 200px;
 }
 
 .path-input input {
   flex: 1;
+  min-width: 0;
   padding: 6px 8px;
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-color);
@@ -2367,6 +2417,14 @@ body {
 
 .settings-modal-content .settings-row label {
   font-size: 13px;
+}
+
+.settings-modal-content .settings-row label:not(.toggle) {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-modal-content .settings-row .toggle {
   flex-shrink: 0;
 }
 
@@ -2387,11 +2445,13 @@ body {
   display: flex;
   gap: 8px;
   flex: 1;
+  min-width: 0;
   max-width: 280px;
 }
 
 .settings-modal-content .path-input input {
   flex: 1;
+  min-width: 0;
   padding: 8px 12px;
   background-color: rgba(20, 10, 10, 0.6);
   border: 1px solid rgba(60, 20, 20, 0.4);
@@ -2505,8 +2565,14 @@ body {
    MINECRAFT THEME OVERRIDES
    ============================================ */
 
-[data-theme="minecraft"] body {
-  font-family: 'Minecraft', 'Courier New', monospace;
+/* NOTE: `data-theme` is set on the `.app` div (see App.tsx), which is a
+   DESCENDANT of `body`, not an ancestor — so `[data-theme="minecraft"] body`
+   never matches anything. Apply the font directly to the themed element
+   itself so it cascades via normal inheritance to every descendant
+   (headings, labels, hints, and form controls via the `button, input,
+   select, textarea { font-family: inherit; }` rule above). */
+[data-theme="minecraft"] {
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] * {
@@ -2667,7 +2733,7 @@ body {
 
 [data-theme="minecraft"] .app-title h1 {
   color: #5a8f32;
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
   text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
 }
 
@@ -2764,7 +2830,7 @@ body {
   border-radius: 0 !important;
   border: 2px solid rgba(0, 0, 0, 0.4);
   box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.2);
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
   font-weight: 400;
   text-transform: none;
   letter-spacing: 0;
@@ -2806,6 +2872,16 @@ body {
 [data-theme="minecraft"] .btn-danger {
   background: linear-gradient(180deg, #8b1a1a 0%, #6b1010 100%);
   border-color: #4a0a0a;
+}
+
+[data-theme="minecraft"] .btn-icon.btn-danger {
+  background: linear-gradient(180deg, rgba(100, 100, 100, 0.95) 0%, rgba(70, 70, 70, 0.95) 100%);
+  border-color: transparent;
+}
+
+[data-theme="minecraft"] .btn-icon.btn-danger:hover:not(:disabled) {
+  background: linear-gradient(180deg, rgba(120, 120, 120, 0.95) 0%, rgba(90, 90, 90, 0.95) 100%);
+  border-color: #c62828;
 }
 
 [data-theme="minecraft"] .btn-danger:hover:not(:disabled) {
@@ -2925,7 +3001,7 @@ body {
 
 [data-theme="minecraft"] .pack-status-badge {
   border-radius: 0 !important;
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .scan-input input,
@@ -2934,7 +3010,7 @@ body {
   border-radius: 0 !important;
   border: 2px solid rgba(80, 80, 80, 0.8);
   background-color: rgba(40, 40, 40, 0.95);
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .scan-input input:focus,
@@ -2947,7 +3023,7 @@ body {
   border-radius: 0 !important;
   border: 2px solid rgba(80, 80, 80, 0.8);
   background: linear-gradient(180deg, rgba(60, 60, 60, 0.95) 0%, rgba(40, 40, 40, 0.95) 100%);
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .pack-type-dropdown-btn:hover {
@@ -2961,7 +3037,7 @@ body {
 }
 
 [data-theme="minecraft"] .pack-type-option {
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .pack-type-option:first-child,
@@ -2980,7 +3056,7 @@ body {
 
 [data-theme="minecraft"] .tab {
   border-radius: 0 !important;
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .tab.active {
@@ -3004,7 +3080,7 @@ body {
 
 [data-theme="minecraft"] .modal-header h3 {
   color: #5a8f32;
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
   text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.5);
 }
 
@@ -3042,7 +3118,7 @@ body {
 
 [data-theme="minecraft"] .settings-modal-header h2 {
   color: #5a8f32;
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
   text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.5);
 }
 
@@ -3054,7 +3130,7 @@ body {
 
 [data-theme="minecraft"] .settings-modal-content .settings-section h3 {
   color: #5a8f32;
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .settings-modal-content .path-input input {
@@ -3079,7 +3155,7 @@ body {
   border-radius: 0 !important;
   border-left: 4px solid;
   background-color: rgba(40, 40, 40, 0.98);
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .notification-error {
@@ -3172,7 +3248,7 @@ body {
 
 [data-theme="minecraft"] .skinmaster-notice-header {
   color: #f9a825;
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .template-update-notice .skinmaster-notice-header {
@@ -3217,7 +3293,7 @@ body {
   border-radius: 0 !important;
   border: 2px solid #f9a825;
   background-color: rgba(249, 168, 37, 0.2);
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .icon-preview {
@@ -3239,5 +3315,91 @@ body {
 }
 
 [data-theme="minecraft"] .friendly-message {
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
+}
+
+/* -- Export dropdown --------------------------------------- */
+.export-dropdown-wrapper {
+  position: relative;
+}
+
+.export-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius);
+  min-width: 150px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 200;
+}
+
+.export-dropdown-item {
+  display: block;
+  width: 100%;
+  padding: 9px 14px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.export-dropdown-item:hover {
+  background-color: var(--btn-hover);
+  color: var(--text-primary);
+}
+
+/* -- Pack Preview Modal ------------------------------------ */
+.preview-file-tree {
+  max-height: 460px;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 12px;
+  background-color: var(--bg-tertiary);
+  border-radius: var(--border-radius);
+  padding: 4px 0;
+}
+
+.preview-file-count {
+  padding: 4px 8px 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 4px;
+}
+
+.preview-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  color: var(--text-secondary);
+}
+
+.preview-tree-dir {
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.preview-tree-dir:hover {
+  background-color: var(--btn-hover);
+}
+
+.preview-tree-icon {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.preview-tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

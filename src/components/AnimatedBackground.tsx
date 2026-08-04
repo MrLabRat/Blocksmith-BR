@@ -80,6 +80,8 @@ export function AnimatedBackground({
     };
   }, [disabled, style, smokeIntensity, blobCount]);
 
+  if (style === 'none') return null;
+
   return (
     <div className="app-background">
       <canvas

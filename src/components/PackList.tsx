@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { PackInfo, PackTypeLabels, PackTypeColors, getPackKey } from '../types';
 import { getFolderName, getBestDisplayName, getBaseNameForGrouping, getIconForPackType } from '../utils/packUtils';
-import { Folder, Trash2, Box, Copy, FileText, Hash, ChevronDown, Check, Minus, RefreshCw, CheckCircle } from 'lucide-react';
+import { Folder, Trash2, Box, Copy, FileText, Hash, ChevronDown, Check, Minus, RefreshCw, CheckCircle, Eye } from 'lucide-react';
 
 interface PackListProps {
   packs: PackInfo[];
@@ -9,10 +9,14 @@ interface PackListProps {
   onTogglePack: (key: string) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
+  onSelectUpdates?: () => void;
   onRemove: (key: string) => void;
   onRemoveSelected: () => void;
   onDeleteFromDisk: (pack: PackInfo) => void;
   onDeleteSelectedFromDisk: () => void;
+  onPreview?: (pack: PackInfo) => void;
+  newPackPaths?: Set<string>;
+  deleteFileOnRemove: boolean;
 }
 
 interface ContextMenuState {
@@ -31,11 +35,12 @@ interface PackGroup {
   isMashup?: boolean;
 }
 
-function PackIcon({ pack }: { pack: PackInfo }) {
-  if (pack.icon_base64) {
+function PackIcon({ pack, fallbackIconBase64 }: { pack: PackInfo; fallbackIconBase64?: string }) {
+  const iconSrc = pack.icon_base64 || fallbackIconBase64;
+  if (iconSrc) {
     return (
       <img
-        src={pack.icon_base64}
+        src={iconSrc}
         alt={pack.name}
         className="pack-icon-img"
       />
@@ -56,7 +61,10 @@ function PackIcon({ pack }: { pack: PackInfo }) {
 function InstallStatusBadge({ pack }: { pack: PackInfo }) {
   if (pack.is_update) {
     return (
-      <span className="pack-status-badge update" title={`Update available (installed: v${pack.installed_version || '?'})`}>
+      <span
+        className="pack-status-badge update"
+        title={`Update available: v${pack.installed_version || '?'} \u2192 v${pack.version || 'unknown'}`}
+      >
         <RefreshCw size={10} />
         Update
       </span>
@@ -96,13 +104,39 @@ export function PackList({
   onTogglePack,
   onSelectAll,
   onDeselectAll,
+  onSelectUpdates,
   onRemove,
   onRemoveSelected,
   onDeleteFromDisk,
   onDeleteSelectedFromDisk,
+  onPreview,
+  newPackPaths,
+  deleteFileOnRemove,
 }: PackListProps) {
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  const trashTooltip = deleteFileOnRemove
+    ? 'Delete file from disk\nShift+Click to only remove from list'
+    : 'Remove from list\nShift+Click to delete file from disk';
+
+  const trashTooltipSelected = deleteFileOnRemove
+    ? 'Delete selected files from disk\nShift+Click to only remove from list'
+    : 'Remove selected from list\nShift+Click to delete files from disk';
+
+  const handleTrashClick = useCallback((e: React.MouseEvent, pack: PackInfo, key: string) => {
+    e.stopPropagation();
+    const wantDelete = e.shiftKey ? !deleteFileOnRemove : deleteFileOnRemove;
+    if (wantDelete) {
+      if (selectedPacks.has(key) && selectedPacks.size > 1) {
+        onDeleteSelectedFromDisk();
+      } else {
+        onDeleteFromDisk(pack);
+      }
+    } else {
+      onRemove(key);
+    }
+  }, [deleteFileOnRemove, selectedPacks, onDeleteFromDisk, onDeleteSelectedFromDisk, onRemove]);
 
   const groupedPacks = useMemo(() => {
     const groups: PackGroup[] = [];
@@ -123,7 +157,10 @@ export function PackList({
       const behaviorPacks = groupPacks.filter(p => p.pack_type === 'BehaviorPack');
       const resourcePacks = groupPacks.filter(p => p.pack_type === 'ResourcePack');
       const skinPacks = groupPacks.filter(p => p.pack_type === 'SkinPack' || p.pack_type === 'SkinPack4D');
-      const worldTemplates = groupPacks.filter(p => p.pack_type === 'WorldTemplate');
+      // MashupPack is a world template that was flagged as part of a mash-up set (by filename
+      // or correlation) — it must still be treated as a world template for grouping, otherwise
+      // it silently disappears from every bucket below.
+      const worldTemplates = groupPacks.filter(p => p.pack_type === 'WorldTemplate' || p.pack_type === 'MashupPack');
       
       // Determine if this is a mash-up pack (has multiple pack types)
       const hasMultipleTypes = [behaviorPacks.length > 0, resourcePacks.length > 0, skinPacks.length > 0, worldTemplates.length > 0].filter(Boolean).length > 1;
@@ -148,7 +185,7 @@ export function PackList({
               processedKeys.add(key);
               if (p.pack_type === 'ResourcePack') childRPs.push(p);
               else if (p.pack_type === 'SkinPack' || p.pack_type === 'SkinPack4D') childSPs.push(p);
-              else if (p.pack_type === 'WorldTemplate') childWTs.push(p);
+              else if (p.pack_type === 'WorldTemplate' || p.pack_type === 'MashupPack') childWTs.push(p);
             }
           }
           
@@ -156,7 +193,7 @@ export function PackList({
             mainPack,
             resourcePacks: mainPack.pack_type === 'ResourcePack' ? [] : childRPs,
             skinPacks: mainPack.pack_type === 'SkinPack' || mainPack.pack_type === 'SkinPack4D' ? [] : childSPs,
-            worldTemplates: mainPack.pack_type === 'WorldTemplate' ? [] : childWTs,
+            worldTemplates: mainPack.pack_type === 'WorldTemplate' || mainPack.pack_type === 'MashupPack' ? [] : childWTs,
             displayName: getBestDisplayName(mainPack),
             isAddon: behaviorPacks.length > 0 && resourcePacks.length > 0,
             isMashup: hasMultipleTypes && worldTemplates.length > 0,
@@ -243,6 +280,8 @@ export function PackList({
     closeContextMenu();
   };
 
+  const updateCount = useMemo(() => packs.filter(p => p.is_update).length, [packs]);
+
   if (packs.length === 0) {
     return (
       <div className="pack-list-empty">
@@ -266,17 +305,28 @@ export function PackList({
           <button className="btn btn-small" onClick={onDeselectAll}>
             Deselect All
           </button>
+          {onSelectUpdates && updateCount > 0 && (
+            <button
+              className="btn btn-small"
+              onClick={onSelectUpdates}
+              title="Select only packs that have a newer version than what's installed"
+            >
+              <RefreshCw size={13} style={{ marginRight: 4 }} />
+              Select All Updates ({updateCount})
+            </button>
+          )}
           {selectedPacks.size > 0 && (
             <button
               className="btn btn-small btn-danger"
               onClick={(e) => {
-                if (e.shiftKey) {
+                const wantDelete = e.shiftKey ? !deleteFileOnRemove : deleteFileOnRemove;
+                if (wantDelete) {
                   onDeleteSelectedFromDisk();
                 } else {
                   onRemoveSelected();
                 }
               }}
-              data-tooltip={`Remove selected from list\nShift+Click to delete files from disk`}
+              data-tooltip={trashTooltipSelected}
             >
               <Trash2 size={14} />
               Remove ({selectedPacks.size})
@@ -298,6 +348,14 @@ export function PackList({
           ];
           const allSelected = allKeys.every(k => selectedPacks.has(k));
           const someSelected = allKeys.some(k => selectedPacks.has(k));
+
+          // Skin packs commonly ship without their own icon; fall back to the
+          // world template's or resource pack's icon so they don't show a generic glyph.
+          const sharedIcon =
+            group.worldTemplates.find(p => p.icon_base64)?.icon_base64 ||
+            ((group.mainPack.pack_type === 'WorldTemplate' || group.mainPack.pack_type === 'MashupPack') ? group.mainPack.icon_base64 : undefined) ||
+            group.resourcePacks.find(p => p.icon_base64)?.icon_base64 ||
+            (group.mainPack.pack_type === 'ResourcePack' ? group.mainPack.icon_base64 : undefined);
           
           return (
             <div key={mainKey} className="pack-group">
@@ -316,6 +374,9 @@ export function PackList({
                   <div className="pack-name">
                     {group.displayName}
                     <InstallStatusBadge pack={group.mainPack} />
+                    {newPackPaths?.has(group.mainPack.path) && (
+                      <span className="pack-status-badge new-pack">New</span>
+                    )}
                     {hasChildren && (
                       <span className="expand-indicator">
                         <ChevronDown 
@@ -345,21 +406,19 @@ export function PackList({
                     {group.mainPack.subfolder && <span className="pack-subfolder"> / {group.mainPack.subfolder}</span>}
                   </div>
                 </div>
+                {onPreview && (
+                  <button
+                    className="btn btn-icon"
+                    onClick={(e) => { e.stopPropagation(); onPreview(group.mainPack); }}
+                    title="Preview archive contents"
+                  >
+                    <Eye size={15} />
+                  </button>
+                )}
                 <button
                   className="btn btn-icon btn-danger"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (e.shiftKey) {
-                      if (selectedPacks.has(mainKey) && selectedPacks.size > 1) {
-                        onDeleteSelectedFromDisk();
-                      } else {
-                        onDeleteFromDisk(group.mainPack);
-                      }
-                    } else {
-                      onRemove(mainKey);
-                    }
-                  }}
-                  data-tooltip={`Remove from list\nShift+Click to delete file from disk`}
+                  onClick={(e) => handleTrashClick(e, group.mainPack, mainKey)}
+                  data-tooltip={trashTooltip}
                 >
                   <Trash2 size={16} />
                 </button>
@@ -396,19 +455,8 @@ export function PackList({
                         </div>
                         <button
                           className="btn btn-icon btn-danger"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (e.shiftKey) {
-                              if (selectedPacks.has(rpKey) && selectedPacks.size > 1) {
-                                onDeleteSelectedFromDisk();
-                              } else {
-                                onDeleteFromDisk(rp);
-                              }
-                            } else {
-                              onRemove(rpKey);
-                            }
-                          }}
-                          data-tooltip={`Remove from list\nShift+Click to delete file from disk`}
+                          onClick={(e) => handleTrashClick(e, rp, rpKey)}
+                          data-tooltip={trashTooltip}
                         >
                           <Trash2 size={16} />
                         </button>
@@ -428,7 +476,7 @@ export function PackList({
                           checked={selectedPacks.has(spKey)}
                           onChange={() => onTogglePack(spKey)}
                         />
-                        <PackIcon pack={sp} />
+                        <PackIcon pack={sp} fallbackIconBase64={sharedIcon} />
                         <div className="pack-info">
                           <div className="pack-name">{getBestDisplayName(sp)}</div>
                           <div className="pack-details">
@@ -444,19 +492,8 @@ export function PackList({
                         </div>
                         <button
                           className="btn btn-icon btn-danger"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (e.shiftKey) {
-                              if (selectedPacks.has(spKey) && selectedPacks.size > 1) {
-                                onDeleteSelectedFromDisk();
-                              } else {
-                                onDeleteFromDisk(sp);
-                              }
-                            } else {
-                              onRemove(spKey);
-                            }
-                          }}
-                          data-tooltip={`Remove from list\nShift+Click to delete file from disk`}
+                          onClick={(e) => handleTrashClick(e, sp, spKey)}
+                          data-tooltip={trashTooltip}
                         >
                           <Trash2 size={16} />
                         </button>
@@ -480,8 +517,8 @@ export function PackList({
                         <div className="pack-info">
                           <div className="pack-name">{getBestDisplayName(wt)}</div>
                           <div className="pack-details">
-                            <span className="pack-type" style={{ color: PackTypeColors['WorldTemplate'] }}>
-                              World Template
+                            <span className="pack-type" style={{ color: PackTypeColors[wt.pack_type] }}>
+                              {PackTypeLabels[wt.pack_type]}
                             </span>
                           </div>
                           <div className="pack-path">
@@ -492,19 +529,8 @@ export function PackList({
                         </div>
                         <button
                           className="btn btn-icon btn-danger"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (e.shiftKey) {
-                              if (selectedPacks.has(wtKey) && selectedPacks.size > 1) {
-                                onDeleteSelectedFromDisk();
-                              } else {
-                                onDeleteFromDisk(wt);
-                              }
-                            } else {
-                              onRemove(wtKey);
-                            }
-                          }}
-                          data-tooltip={`Remove from list\nShift+Click to delete file from disk`}
+                          onClick={(e) => handleTrashClick(e, wt, wtKey)}
+                          data-tooltip={trashTooltip}
                         >
                           <Trash2 size={16} />
                         </button>

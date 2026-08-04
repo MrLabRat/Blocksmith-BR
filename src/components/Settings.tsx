@@ -63,6 +63,29 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
     });
   };
 
+  const handleDeleteOldOnUpdateToggle = () => {
+    onSettingsChange({
+      ...settings,
+      delete_old_on_update: !(settings.delete_old_on_update ?? true),
+    });
+  };
+
+  const handleDeleteFileOnRemoveToggle = () => {
+    onSettingsChange({
+      ...settings,
+      delete_file_on_remove: !(settings.delete_file_on_remove ?? true),
+    });
+  };
+
+  const handleRememberScanLocationToggle = () => {
+    const next = !(settings.remember_scan_location ?? true);
+    onSettingsChange({
+      ...settings,
+      remember_scan_location: next,
+      scan_location: next ? settings.scan_location : undefined,
+    });
+  };
+
   const handleAnimationsToggle = () => {
     onSettingsChange({
       ...settings,
@@ -222,6 +245,16 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
             <h3>Options</h3>
             <div className="settings-row">
               <label>
+                Remember Last Scan Directory
+                <span className="hint">Prefill the scan folder from your last scan on startup</span>
+              </label>
+              <label className="toggle">
+                <input type="checkbox" checked={settings.remember_scan_location ?? true} onChange={handleRememberScanLocationToggle} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <label>
                 Dry Run Mode
                 <span className="hint">Preview without extracting/moving files</span>
               </label>
@@ -237,6 +270,26 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
               </label>
               <label className="toggle">
                 <input type="checkbox" checked={settings.delete_source} onChange={handleDeleteSourceToggle} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <label>
+                Replace Old on Update
+                <span className="hint">Remove old pack folder when installing an update</span>
+              </label>
+              <label className="toggle">
+                <input type="checkbox" checked={settings.delete_old_on_update ?? true} onChange={handleDeleteOldOnUpdateToggle} />
+                <span className="toggle-slider"></span>
+              </label>
+            </div>
+            <div className="settings-row">
+              <label>
+                Delete File When Removing from List
+                <span className="hint">Clicking the trash icon on a found pack also deletes the file from disk, so it won't reappear in future scans. Hold Shift to do the opposite.</span>
+              </label>
+              <label className="toggle">
+                <input type="checkbox" checked={settings.delete_file_on_remove ?? true} onChange={handleDeleteFileOnRemoveToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>

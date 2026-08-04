@@ -37,3 +37,7 @@ installer/
 
 # Windows reserved device name (can't be committed)
 nul
+
+# Scratch/test fixture files (not app source)
+context/
+font/

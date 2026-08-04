@@ -1,9 +1,16 @@
 import { useState, useEffect, useMemo, useCallback, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { PackInfo, PackType, PackTypeColors, AppNotification } from '../types';
+import { listen } from '@tauri-apps/api/event';
+import { List } from 'react-window';
+import type { RowComponentProps } from 'react-window';
+import { PackInfo, PackType, PackTypeColors, AppNotification, DuplicateGroup, RenameSuggestion, RenameResult } from '../types';
 import { getFolderName, cleanDisplayName, getBestDisplayName, getBaseNameForGrouping, formatBytes, getIconForPackType } from '../utils/packUtils';
-import { X, Copy, Hash, FileText, Trash2 } from 'lucide-react';
+import { X, Copy, Hash, FileText, Trash2, AlertTriangle, Bookmark, Wand2, Pencil } from 'lucide-react';
 import '../styles/InstalledPacksPage.css';
+
+/** Row height constants for the virtualized list view (react-window). */
+const VIRTUAL_MAIN_ROW_HEIGHT = 76;
+const VIRTUAL_CHILD_ROW_HEIGHT = 68;
 
 interface InstalledPacksPageProps {
   onClose: () => void;
@@ -70,6 +77,22 @@ function getBestGroupIcon(group: PackGroup): string | null {
     ...group.behaviorPacks,
   ];
   for (const p of allPacks) {
+    if (p.icon_base64) return p.icon_base64;
+  }
+  return null;
+}
+
+/** Skin packs commonly ship without their own icon; fall back to the world
+ * template's or resource pack's icon from the same group so they don't show a generic glyph. */
+function getSkinPackFallbackIcon(group: PackGroup): string | null {
+  const candidates = [
+    ...group.worldTemplates,
+    ...group.resourcePacks,
+    ...(group.mainPack.pack_type === 'WorldTemplate' || group.mainPack.pack_type === 'MashupPack' || group.mainPack.pack_type === 'ResourcePack'
+      ? [group.mainPack]
+      : []),
+  ];
+  for (const p of candidates) {
     if (p.icon_base64) return p.icon_base64;
   }
   return null;
@@ -142,39 +165,97 @@ const PackGridCard = memo(function PackGridCard({
   );
 });
 
-const PackGroupItem = memo(function PackGroupItem({ 
-  group, 
-  isExpanded, 
-  hasChildren, 
-  packSizes, 
-  onToggle, 
-  onContextMenu,
-  getBestDisplayName,
-  onDelete
-}: { 
-  group: PackGroup; 
-  isExpanded: boolean; 
-  hasChildren: boolean; 
+type ChildKind = 'WorldTemplate' | 'BehaviorPack' | 'ResourcePack' | 'SkinPack';
+
+const childTypeLabels: Record<ChildKind, string> = {
+  WorldTemplate: 'World Template',
+  BehaviorPack: 'Addon',
+  ResourcePack: 'Resource Pack',
+  SkinPack: 'Skin Pack',
+};
+
+/** Flattened representation of the list view — every visible group header and
+ * (when expanded) its child rows become their own fixed-height virtual row so
+ * react-window can render the whole thing without measuring dynamic heights. */
+type VirtualRow =
+  | { kind: 'main'; group: PackGroup; hasChildren: boolean }
+  | { kind: 'child'; pack: PackInfo; childKind: ChildKind };
+
+interface VirtualListRowProps {
+  virtualRows: VirtualRow[];
   packSizes: Record<string, { size: number; formatted: string }>;
-  onToggle: () => void;
+  expandedGroups: Set<string>;
+  skinFallbackIcons: Record<string, string | null>;
+  onToggle: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, pack: PackInfo) => void;
-  getBestDisplayName: (pack: PackInfo) => string;
   onDelete: (pack: PackInfo) => void;
-}) {
+  getBestDisplayName: (pack: PackInfo) => string;
+}
+
+function VirtualListRow({
+  index,
+  style,
+  virtualRows,
+  packSizes,
+  expandedGroups,
+  skinFallbackIcons,
+  onToggle,
+  onContextMenu,
+  onDelete,
+  getBestDisplayName,
+}: RowComponentProps<VirtualListRowProps>) {
+  const row = virtualRows[index];
+  const wrapperStyle: React.CSSProperties = { ...style, paddingBottom: 4, boxSizing: 'border-box' };
+
+  if (row.kind === 'child') {
+    const { pack, childKind } = row;
+    const isSkinPack = childKind === 'SkinPack';
+    const icon = pack.icon_base64 ?? (isSkinPack ? skinFallbackIcons[pack.path] ?? null : null);
+    return (
+      <div style={wrapperStyle}>
+        <div
+          className="installed-pack-card child-pack"
+          style={{ height: '100%' }}
+          onContextMenu={(e) => onContextMenu(e, pack)}
+        >
+          {icon && <div className="pack-row-bg" style={{ backgroundImage: `url(${icon})` }} />}
+          <InstalledPackIcon pack={pack} overrideIcon={icon} />
+          <div className="pack-card-content">
+            <div className="pack-card-name">{getBestDisplayName(pack)}</div>
+            <div className="pack-card-details">
+              <span className="pack-type" style={{ color: PackTypeColors[childKind] }}>
+                {childTypeLabels[childKind]}
+              </span>
+              <span className="pack-card-size">
+                {packSizes[pack.path]?.formatted || 'Unknown'}
+              </span>
+            </div>
+          </div>
+          <button
+            className="btn btn-icon btn-delete"
+            onClick={(e) => { e.stopPropagation(); onDelete(pack); }}
+            title="Delete pack"
+          >
+            <Trash2 size={12} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const { group, hasChildren } = row;
+  const isExpanded = expandedGroups.has(group.mainPack.path);
   const groupIcon = getBestGroupIcon(group);
 
-  /** Renders a blurred background from an icon if one is available. */
-  const RowBg = ({ icon }: { icon?: string | null }) =>
-    icon ? <div className="pack-row-bg" style={{ backgroundImage: `url(${icon})` }} /> : null;
-
   return (
-    <div className="pack-group">
-      <div 
+    <div style={wrapperStyle}>
+      <div
         className={`installed-pack-card ${hasChildren ? 'has-children' : ''}`}
-        onClick={() => hasChildren && onToggle()}
+        style={{ height: '100%' }}
+        onClick={() => hasChildren && onToggle(group.mainPack.path)}
         onContextMenu={(e) => onContextMenu(e, group.mainPack)}
       >
-        <RowBg icon={groupIcon} />
+        {groupIcon && <div className="pack-row-bg" style={{ backgroundImage: `url(${groupIcon})` }} />}
         <InstalledPackIcon pack={group.mainPack} overrideIcon={groupIcon} />
         <div className="pack-card-content">
           <div className="pack-card-name">
@@ -198,154 +279,18 @@ const PackGroupItem = memo(function PackGroupItem({
               {formatBytes(group.totalSize)}
             </span>
           </div>
-          <div className="pack-card-path" title={group.mainPack.path}>
-            {group.mainPack.path}
-          </div>
         </div>
         <button
           className="btn btn-icon btn-delete"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(group.mainPack);
-          }}
+          onClick={(e) => { e.stopPropagation(); onDelete(group.mainPack); }}
           title="Delete pack"
         >
           <Trash2 size={12} />
         </button>
       </div>
-      
-      {isExpanded && hasChildren && (
-        <div className="pack-group-children">
-          {group.worldTemplates.filter(wt => wt.path !== group.mainPack.path).map((wt) => (
-            <div 
-              key={wt.path}
-              className="installed-pack-card child-pack"
-              onContextMenu={(e) => onContextMenu(e, wt)}
-            >
-              <RowBg icon={wt.icon_base64} />
-              <InstalledPackIcon pack={wt} />
-              <div className="pack-card-content">
-                <div className="pack-card-name">{getBestDisplayName(wt)}</div>
-                <div className="pack-card-details">
-                  <span className="pack-type" style={{ color: PackTypeColors['WorldTemplate'] }}>
-                    World Template
-                  </span>
-                  <span className="pack-card-size">
-                    {packSizes[wt.path]?.formatted || 'Unknown'}
-                  </span>
-                </div>
-              </div>
-              <button
-                className="btn btn-icon btn-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(wt);
-                }}
-                title="Delete pack"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          {group.behaviorPacks.map((bp) => (
-            <div 
-              key={bp.path}
-              className="installed-pack-card child-pack"
-              onContextMenu={(e) => onContextMenu(e, bp)}
-            >
-              <RowBg icon={bp.icon_base64} />
-              <InstalledPackIcon pack={bp} />
-              <div className="pack-card-content">
-                <div className="pack-card-name">{getBestDisplayName(bp)}</div>
-                <div className="pack-card-details">
-                  <span className="pack-type" style={{ color: PackTypeColors['BehaviorPack'] }}>
-                    Addon
-                  </span>
-                  <span className="pack-card-size">
-                    {packSizes[bp.path]?.formatted || 'Unknown'}
-                  </span>
-                </div>
-              </div>
-              <button
-                className="btn btn-icon btn-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(bp);
-                }}
-                title="Delete pack"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          {group.resourcePacks.map((rp) => (
-            <div 
-              key={rp.path}
-              className="installed-pack-card child-pack"
-              onContextMenu={(e) => onContextMenu(e, rp)}
-            >
-              <RowBg icon={rp.icon_base64} />
-              <InstalledPackIcon pack={rp} />
-              <div className="pack-card-content">
-                <div className="pack-card-name">{getBestDisplayName(rp)}</div>
-                <div className="pack-card-details">
-                  <span className="pack-type" style={{ color: PackTypeColors['ResourcePack'] }}>
-                    Resource Pack
-                  </span>
-                  <span className="pack-card-size">
-                    {packSizes[rp.path]?.formatted || 'Unknown'}
-                  </span>
-                </div>
-              </div>
-              <button
-                className="btn btn-icon btn-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(rp);
-                }}
-                title="Delete pack"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-          {group.skinPacks.map((sp) => (
-            <div 
-              key={sp.path}
-              className="installed-pack-card child-pack"
-              onContextMenu={(e) => onContextMenu(e, sp)}
-            >
-              <RowBg icon={sp.icon_base64} />
-              <InstalledPackIcon pack={sp} />
-              <div className="pack-card-content">
-                <div className="pack-card-name">{getBestDisplayName(sp)}</div>
-                <div className="pack-card-details">
-                  <span className="pack-type" style={{ color: PackTypeColors['SkinPack'] }}>
-                    Skin Pack
-                  </span>
-                  <span className="pack-card-size">
-                    {packSizes[sp.path]?.formatted || 'Unknown'}
-                  </span>
-                </div>
-              </div>
-              <button
-                className="btn btn-icon btn-delete"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete(sp);
-                }}
-                title="Delete pack"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   );
-});
-
+}
 
 function csvEscape(value: string): string {
   if (/^[=+\-@\t\r]/.test(value)) {
@@ -381,6 +326,36 @@ function getAddonBaseName(folderName: string): string | null {
 
 const SIZE_CACHE_KEY = 'blocksmith_folder_sizes_cache';
 const CACHE_EXPIRY_MS = 24 * 60 * 60 * 1000;
+
+const FILTER_PRESETS_KEY = 'blocksmith_filter_presets';
+
+interface FilterPreset {
+  name: string;
+  selectedType: PackType | 'All';
+  sortBy: 'name' | 'size' | 'type';
+  sortOrder: 'asc' | 'desc';
+  searchTerm: string;
+}
+
+function loadFilterPresets(): FilterPreset[] {
+  try {
+    const raw = localStorage.getItem(FILTER_PRESETS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as FilterPreset[]) : [];
+  } catch (e) {
+    console.warn('Failed to load filter presets:', e);
+    return [];
+  }
+}
+
+function saveFilterPresets(presets: FilterPreset[]) {
+  try {
+    localStorage.setItem(FILTER_PRESETS_KEY, JSON.stringify(presets));
+  } catch (e) {
+    console.warn('Failed to save filter presets:', e);
+  }
+}
 
 type SizeCacheEntry = { size: number; formatted: string; timestamp: number };
 type SizeCache = Record<string, SizeCacheEntry>;
@@ -433,6 +408,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
   const [packs, setPacks] = useState<PackInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingCount, setLoadingCount] = useState(0);
+  const [loadingTotal, setLoadingTotal] = useState(0);
   const [selectedType, setSelectedType] = useState<PackType | 'All'>('All');
   const [searchTerm, setSearchTerm] = useState('');
   const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
@@ -448,6 +424,14 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('grid');
   const [marketplaceStatus, setMarketplaceStatus] = useState<'idle' | 'loading' | 'done' | 'unavailable'>('idle');
   const [expandedGridCard, setExpandedGridCard] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateGroup[] | null>(null);
+  const [isDuplicateLoading, setIsDuplicateLoading] = useState(false);
+  const [renameSuggestions, setRenameSuggestions] = useState<RenameSuggestion[] | null>(null);
+  const [isRenameScanning, setIsRenameScanning] = useState(false);
+  const [selectedRenames, setSelectedRenames] = useState<Set<string>>(new Set());
+  const [isApplyingRenames, setIsApplyingRenames] = useState(false);
+  const [filterPresets, setFilterPresets] = useState<FilterPreset[]>(() => loadFilterPresets());
+  const [selectedPresetName, setSelectedPresetName] = useState('');
 
 
   const groupedPacks = useMemo(() => {
@@ -623,6 +607,48 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
     return result;
   }, [groupedPacks, selectedType, debouncedSearchTerm, sortBy, sortOrder]);
 
+  /** Flattens groups + their (expanded) children into fixed-height rows for
+   * react-window virtualization of the list view. */
+  const virtualRows = useMemo<VirtualRow[]>(() => {
+    const rows: VirtualRow[] = [];
+    for (const group of filteredGroupedPacks) {
+      const hasChildren = group.resourcePacks.length > 0
+        || group.skinPacks.length > 0
+        || group.behaviorPacks.length > 0
+        || group.worldTemplates.length > 1;
+      rows.push({ kind: 'main', group, hasChildren });
+      if (hasChildren && expandedGroups.has(group.mainPack.path)) {
+        for (const wt of group.worldTemplates.filter(w => w.path !== group.mainPack.path)) {
+          rows.push({ kind: 'child', pack: wt, childKind: 'WorldTemplate' });
+        }
+        for (const bp of group.behaviorPacks) {
+          rows.push({ kind: 'child', pack: bp, childKind: 'BehaviorPack' });
+        }
+        for (const rp of group.resourcePacks) {
+          rows.push({ kind: 'child', pack: rp, childKind: 'ResourcePack' });
+        }
+        for (const sp of group.skinPacks) {
+          rows.push({ kind: 'child', pack: sp, childKind: 'SkinPack' });
+        }
+      }
+    }
+    return rows;
+  }, [filteredGroupedPacks, expandedGroups]);
+
+  /** Skin packs commonly ship without their own icon; precompute a fallback
+   * per-pack so the virtualized child rows don't need the whole group object. */
+  const skinFallbackIcons = useMemo(() => {
+    const map: Record<string, string | null> = {};
+    for (const group of filteredGroupedPacks) {
+      if (group.skinPacks.length === 0) continue;
+      const fallback = getSkinPackFallbackIcon(group);
+      for (const sp of group.skinPacks) {
+        map[sp.path] = fallback;
+      }
+    }
+    return map;
+  }, [filteredGroupedPacks]);
+
   const toggleGroup = useCallback((path: string) => {
     setExpandedGroups(prev => {
       const next = new Set(prev);
@@ -704,16 +730,21 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
       try {
         setIsLoading(true);
         setLoadingCount(0);
+        setLoadingTotal(0);
 
-        // Stream packs in via event listener so we can show a live count
-        const { listen } = await import('@tauri-apps/api/event');
-        const unlisten = await listen<number>('packs_scan_progress', (event) => {
-          setLoadingCount(event.payload);
+        // Stream packs in via event listener so we can show real scan progress.
+        // The backend guarantees monotonically increasing values (a single
+        // dedicated thread emits these), but we still clamp defensively here
+        // in case an event from a previous scan arrives late.
+        const unlisten = await listen<{ current: number; total: number }>('packs_scan_progress', (event) => {
+          setLoadingCount(prev => Math.max(prev, event.payload.current));
+          setLoadingTotal(event.payload.total);
         });
 
         const folderPacks = await invoke<PackInfo[]>('get_directory_folders');
         unlisten();
         setLoadingCount(folderPacks.length);
+        setLoadingTotal(folderPacks.length);
         setPacks(folderPacks);
         setIsLoading(false);
 
@@ -810,14 +841,21 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
     return result;
   }, [packs, selectedType, debouncedSearchTerm, packSizes, sortBy, sortOrder]);
 
-  const packCounts = useMemo(() => ({
-    All: groupedPacks.length,
-    BehaviorPack: groupedPacks.filter(g => g.mainPack.pack_type === 'BehaviorPack').length,
-    ResourcePack: groupedPacks.filter(g => g.mainPack.pack_type === 'ResourcePack').length,
-    SkinPack: groupedPacks.filter(g => g.mainPack.pack_type === 'SkinPack').length,
-    WorldTemplate: groupedPacks.filter(g => g.mainPack.pack_type === 'WorldTemplate').length,
-    MashupPack: groupedPacks.filter(g => g.mainPack.pack_type === 'MashupPack').length,
-  }), [groupedPacks]);
+  const packCounts = useMemo(() => {
+    const counts = {
+      All: groupedPacks.length,
+      BehaviorPack: 0,
+      ResourcePack: 0,
+      SkinPack: 0,
+      WorldTemplate: 0,
+      MashupPack: 0,
+    };
+    for (const g of groupedPacks) {
+      const type = g.mainPack.pack_type;
+      if (type in counts) counts[type as keyof typeof counts]++;
+    }
+    return counts;
+  }, [groupedPacks]);
 
   const filteredTotalSize = useMemo(
     () => filteredGroupedPacks.reduce((sum, g) => sum + g.totalSize, 0),
@@ -826,22 +864,16 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
 
   const { parentFolderTotals, totalSize } = useMemo(() => {
     const totals = {
-      BehaviorPack: groupedPacks
-        .filter(g => g.mainPack.pack_type === 'BehaviorPack')
-        .reduce((sum, g) => sum + g.totalSize, 0),
-      ResourcePack: groupedPacks
-        .filter(g => g.mainPack.pack_type === 'ResourcePack')
-        .reduce((sum, g) => sum + g.totalSize, 0),
-      SkinPack: groupedPacks
-        .filter(g => g.mainPack.pack_type === 'SkinPack')
-        .reduce((sum, g) => sum + g.totalSize, 0),
-      WorldTemplate: groupedPacks
-        .filter(g => g.mainPack.pack_type === 'WorldTemplate')
-        .reduce((sum, g) => sum + g.totalSize, 0),
-      MashupPack: groupedPacks
-        .filter(g => g.mainPack.pack_type === 'MashupPack')
-        .reduce((sum, g) => sum + g.totalSize, 0),
+      BehaviorPack: 0,
+      ResourcePack: 0,
+      SkinPack: 0,
+      WorldTemplate: 0,
+      MashupPack: 0,
     };
+    for (const g of groupedPacks) {
+      const type = g.mainPack.pack_type;
+      if (type in totals) totals[type as keyof typeof totals] += g.totalSize;
+    }
     return {
       parentFolderTotals: totals,
       totalSize: Object.values(totals).reduce((sum, size) => sum + size, 0),
@@ -899,6 +931,158 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
     setTimeout(() => URL.revokeObjectURL(url), 100);
   };
 
+  const handleSavePreset = () => {
+    const name = window.prompt('Name this filter preset:', selectedPresetName || '');
+    if (!name) return;
+    const newPreset: FilterPreset = { name, selectedType, sortBy, sortOrder, searchTerm };
+    setFilterPresets(prev => {
+      const next = [...prev.filter(p => p.name !== name), newPreset];
+      saveFilterPresets(next);
+      return next;
+    });
+    setSelectedPresetName(name);
+  };
+
+  const handleApplyPreset = (name: string) => {
+    setSelectedPresetName(name);
+    if (!name) return;
+    const preset = filterPresets.find(p => p.name === name);
+    if (!preset) return;
+    setSelectedType(preset.selectedType);
+    setSortBy(preset.sortBy);
+    setSortOrder(preset.sortOrder);
+    setSearchTerm(preset.searchTerm);
+  };
+
+  const handleDeletePreset = () => {
+    if (!selectedPresetName) return;
+    setFilterPresets(prev => {
+      const next = prev.filter(p => p.name !== selectedPresetName);
+      saveFilterPresets(next);
+      return next;
+    });
+    setSelectedPresetName('');
+  };
+
+  const handleFindDuplicates = async () => {
+    setIsDuplicateLoading(true);
+    try {
+      const groups = await invoke<DuplicateGroup[]>('find_duplicate_packs');
+      setDuplicates(groups);
+    } catch (error) {
+      addNotification('error', 'Duplicate Scan Failed', `${error}`);
+    } finally {
+      setIsDuplicateLoading(false);
+    }
+  };
+
+  const handleRemoveDuplicate = async (path: string) => {
+    try {
+      await invoke('delete_pack', { path });
+      setPacks(prev => prev.filter(p => p.path !== path));
+      setDuplicates(prev =>
+        prev
+          ? prev
+              .map(g => ({ ...g, packs: g.packs.filter(p => p.path !== path) }))
+              .filter(g => g.packs.length > 1)
+          : prev
+      );
+    } catch (error) {
+      addNotification('error', 'Delete Failed', `${error}`);
+    }
+  };
+
+  /** Migrates a pack's path (and its cached folder size) after its on-disk
+   * folder was renamed, without needing a full pack list reload. */
+  const applyRenamedPath = (oldPath: string, newPath: string) => {
+    setPacks(prev => prev.map(p => p.path === oldPath ? { ...p, path: newPath } : p));
+    setPackSizes(prev => {
+      if (!(oldPath in prev)) return prev;
+      const next = { ...prev };
+      next[newPath] = next[oldPath];
+      delete next[oldPath];
+      return next;
+    });
+  };
+
+  const handleSuggestRenames = async () => {
+    setIsRenameScanning(true);
+    try {
+      const suggestions = await invoke<RenameSuggestion[]>('suggest_pack_renames');
+      setRenameSuggestions(suggestions);
+      setSelectedRenames(new Set(suggestions.map(s => s.path)));
+    } catch (error) {
+      addNotification('error', 'Rename Scan Failed', `${error}`);
+    } finally {
+      setIsRenameScanning(false);
+    }
+  };
+
+  const toggleRenameSelection = (path: string) => {
+    setSelectedRenames(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) {
+        next.delete(path);
+      } else {
+        next.add(path);
+      }
+      return next;
+    });
+  };
+
+  const handleApplyRenames = async () => {
+    if (!renameSuggestions || selectedRenames.size === 0) return;
+    setIsApplyingRenames(true);
+    const toApply = renameSuggestions.filter(s => selectedRenames.has(s.path));
+    try {
+      const results = await invoke<RenameResult[]>('rename_installed_packs', {
+        renames: toApply.map(s => ({ path: s.path, new_name: s.suggested_name })),
+      });
+
+      let successCount = 0;
+      const failedPaths = new Set<string>();
+      for (const result of results) {
+        if (result.new_path) {
+          successCount++;
+          applyRenamedPath(result.path, result.new_path);
+        } else {
+          failedPaths.add(result.path);
+        }
+      }
+      const failCount = results.length - successCount;
+
+      setRenameSuggestions(prev => prev ? prev.filter(s => failedPaths.has(s.path)) : prev);
+      setSelectedRenames(new Set());
+
+      if (successCount > 0) {
+        addNotification(
+          'success',
+          'Packs Renamed',
+          `Renamed ${successCount} pack folder${successCount === 1 ? '' : 's'}.${failCount > 0 ? ` ${failCount} failed.` : ''}`
+        );
+      } else if (failCount > 0) {
+        addNotification('error', 'Rename Failed', `Failed to rename ${failCount} pack folder${failCount === 1 ? '' : 's'}.`);
+      }
+    } catch (error) {
+      addNotification('error', 'Rename Failed', `${error}`);
+    } finally {
+      setIsApplyingRenames(false);
+    }
+  };
+
+  const handleRenamePack = async (pack: PackInfo) => {
+    closeContextMenu();
+    const currentFolderName = getFolderName(pack.path);
+    const newName = window.prompt('Rename pack folder to:', currentFolderName);
+    if (!newName || newName === currentFolderName) return;
+    try {
+      const newPath = await invoke<string>('rename_installed_pack', { path: pack.path, newName });
+      applyRenamedPath(pack.path, newPath);
+    } catch (error) {
+      addNotification('error', 'Rename Failed', `${error}`);
+    }
+  };
+
   return (
     <>
     <div className="modal-overlay" onClick={onClose}>
@@ -913,12 +1097,17 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
           {isLoading ? (
             <div className="packs-loading-bar">
               <div className="packs-loading-label">
-                Scanning packs{loadingCount > 0 ? ` — found ${loadingCount} so far` : '...'}
+                {loadingTotal > 0
+                  ? `Scanning packs — ${loadingCount}/${loadingTotal}`
+                  : 'Scanning packs...'}
               </div>
               <div className="progress-bar-track">
                 <div
                   className="progress-bar-fill"
-                  style={{ width: loadingCount > 0 ? '100%' : '30%', transition: loadingCount > 0 ? 'none' : 'width 2s ease' }}
+                  style={{
+                    width: loadingTotal > 0 ? `${Math.min(100, (loadingCount / loadingTotal) * 100)}%` : '15%',
+                    transition: loadingTotal > 0 ? 'width 0.2s ease' : 'width 2s ease',
+                  }}
                 />
               </div>
             </div>
@@ -974,6 +1163,33 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                  >
                    {viewMode === 'grid' ? '▦' : '☰'}
                  </button>
+                 <select
+                   value={selectedPresetName}
+                   onChange={(e) => handleApplyPreset(e.target.value)}
+                   className="sort-select"
+                   title="Apply a saved filter preset"
+                 >
+                   <option value="">Filter Presets...</option>
+                   {filterPresets.map(p => (
+                     <option key={p.name} value={p.name}>{p.name}</option>
+                   ))}
+                 </select>
+                 <button
+                   className="sort-order-btn"
+                   onClick={handleSavePreset}
+                   title="Save current filters as a preset"
+                 >
+                   <Bookmark size={13} />
+                 </button>
+                 {selectedPresetName && (
+                   <button
+                     className="sort-order-btn"
+                     onClick={handleDeletePreset}
+                     title="Delete this preset"
+                   >
+                     <Trash2 size={13} />
+                   </button>
+                 )}
                  </div>
 
                {/* Action buttons */}
@@ -986,6 +1202,24 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                      Delete Selected ({selectedPacks.size})
                    </button>
                  )}
+                 <button
+                   className="btn btn-secondary btn-sm"
+                   onClick={handleFindDuplicates}
+                   disabled={isDuplicateLoading}
+                   title="Find installed packs sharing the same UUID"
+                 >
+                   <AlertTriangle size={13} style={{ marginRight: 4 }} />
+                   {isDuplicateLoading ? 'Scanning...' : 'Find Duplicates'}
+                 </button>
+                 <button
+                   className="btn btn-secondary btn-sm"
+                   onClick={handleSuggestRenames}
+                   disabled={isRenameScanning}
+                   title="Find installed pack folders with messy legacy names and suggest cleaner names"
+                 >
+                   <Wand2 size={13} style={{ marginRight: 4 }} />
+                   {isRenameScanning ? 'Scanning...' : 'Clean Up Names'}
+                 </button>
                  <button 
                    className="btn btn-secondary btn-sm"
                    onClick={handleExportCSV}
@@ -1050,6 +1284,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                            ...group.skinPacks,
                            ...group.behaviorPacks,
                          ];
+                         const skinFallbackIcon = getSkinPackFallbackIcon(group);
                          return (
                            <div className="packs-grid-children-panel">
                              <div className="packs-grid-children-header">
@@ -1060,10 +1295,12 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                                {childPacks.map(child => {
                                  const ChildIcon = getIconForPackType(child.pack_type);
                                  const childColor = PackTypeColors[child.pack_type];
+                                 const isSkinPack = child.pack_type === 'SkinPack' || child.pack_type === 'SkinPack4D';
+                                 const childIconSrc = child.icon_base64 ?? (isSkinPack ? skinFallbackIcon : null);
                                  return (
                                    <div key={child.path} className="packs-grid-child-row" onContextMenu={(e) => handleContextMenu(e, child)}>
-                                     {child.icon_base64
-                                       ? <img src={child.icon_base64} alt={child.name} className="packs-grid-child-thumb" />
+                                     {childIconSrc
+                                       ? <img src={childIconSrc} alt={child.name} className="packs-grid-child-thumb" />
                                        : <div className="packs-grid-child-thumb packs-grid-child-thumb-fallback" style={{ backgroundColor: `${childColor}22` }}>
                                            <ChildIcon size={16} style={{ color: childColor }} />
                                          </div>
@@ -1083,27 +1320,27 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                        })()}
                      </div>
                    ) : (
-                      <div className="installed-packs-list">
-                        {filteredGroupedPacks.map((group) => {
-                          const isExpanded = expandedGroups.has(group.mainPack.path);
-                          const hasChildren = group.resourcePacks.length > 0 
-                            || group.skinPacks.length > 0 
-                            || group.behaviorPacks.length > 0
-                            || (group.worldTemplates.length > 1);
-                          return (
-                             <PackGroupItem
-                               key={group.mainPack.path}
-                               group={group}
-                               isExpanded={isExpanded}
-                               hasChildren={hasChildren}
-                               packSizes={packSizes}
-                               onToggle={() => toggleGroup(group.mainPack.path)}
-                               onContextMenu={handleContextMenu}
-                               getBestDisplayName={getBestDisplayName}
-                               onDelete={handleDeletePack}
-                             />
-                           );
-                        })}
+                      <div className="installed-packs-list installed-packs-list-virtual">
+                        {virtualRows.length > 0 && (
+                          <List
+                            className="installed-packs-list-scroller"
+                            style={{ height: '100%', width: '100%' }}
+                            rowCount={virtualRows.length}
+                            rowHeight={(rowIndex) => virtualRows[rowIndex].kind === 'main' ? VIRTUAL_MAIN_ROW_HEIGHT : VIRTUAL_CHILD_ROW_HEIGHT}
+                            overscanCount={6}
+                            rowComponent={VirtualListRow}
+                            rowProps={{
+                              virtualRows,
+                              packSizes,
+                              expandedGroups,
+                              skinFallbackIcons,
+                              onToggle: toggleGroup,
+                              onContextMenu: handleContextMenu,
+                              onDelete: handleDeletePack,
+                              getBestDisplayName,
+                            }}
+                          />
+                        )}
                       </div>
                    )}
 
@@ -1152,6 +1389,10 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
               <FileText size={14} />
               Copy Name
             </div>
+            <div className="context-menu-item" onClick={() => handleRenamePack(contextMenu.pack)}>
+              <Pencil size={14} />
+              Rename...
+            </div>
             <div className="context-menu-divider" />
             <div className="context-menu-item danger" onClick={() => handleDeletePack(contextMenu.pack)}>
               <Trash2 size={14} />
@@ -1197,6 +1438,117 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
            <div className="modal-actions" style={{ gap: 8 }}>
              <button className="btn btn-secondary" onClick={() => setPendingDeleteSelected(false)}>Cancel</button>
              <button className="btn btn-danger" onClick={confirmDeleteSelected}>Delete</button>
+           </div>
+         </div>
+       </div>
+     )}
+
+     {duplicates !== null && (
+       <div className="modal-overlay" onClick={() => setDuplicates(null)}>
+         <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+           <div className="modal-header">
+             <h3>
+               <AlertTriangle size={16} style={{ marginRight: 6, color: 'var(--warning-color, #f59e0b)' }} />
+               Duplicate Packs
+             </h3>
+             <button className="btn btn-icon" onClick={() => setDuplicates(null)}><X size={20} /></button>
+           </div>
+           <div className="modal-content">
+             {duplicates.length === 0 ? (
+               <p style={{ padding: '16px 0', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                 No duplicates found — every installed pack is present only once.
+               </p>
+             ) : (
+               <div className="duplicate-groups">
+                 <p style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+                   Found {duplicates.length} pack{duplicates.length > 1 ? 's' : ''} installed more than once. Keep one copy and remove the rest.
+                 </p>
+                 {duplicates.map((group) => (
+                   <div key={group.uuid} className="duplicate-group">
+                     <div className="duplicate-group-header">
+                       <span className="duplicate-group-name">{group.name}</span>
+                       <span className="duplicate-group-uuid">{group.uuid}</span>
+                     </div>
+                     {group.packs.map((pack) => (
+                       <div key={pack.path} className="duplicate-pack-row">
+                         <div className="duplicate-pack-info">
+                           <span className="duplicate-pack-type">{pack.pack_type}</span>
+                           <span className="duplicate-pack-folder" title={pack.path}>{pack.folder_name}</span>
+                         </div>
+                         <button
+                           className="btn btn-danger btn-sm"
+                           onClick={() => handleRemoveDuplicate(pack.path)}
+                           title={`Delete: ${pack.path}`}
+                         >
+                           <Trash2 size={12} style={{ marginRight: 4 }} />
+                           Remove
+                         </button>
+                       </div>
+                     ))}
+                   </div>
+                 ))}
+               </div>
+             )}
+           </div>
+           <div className="modal-actions">
+             <button className="btn btn-primary" onClick={() => setDuplicates(null)}>Close</button>
+           </div>
+         </div>
+       </div>
+     )}
+
+     {renameSuggestions !== null && (
+       <div className="modal-overlay" onClick={() => setRenameSuggestions(null)}>
+         <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+           <div className="modal-header">
+             <h3>
+               <Wand2 size={16} style={{ marginRight: 6, color: 'var(--primary-color)' }} />
+               Clean Up Pack Names
+             </h3>
+             <button className="btn btn-icon" onClick={() => setRenameSuggestions(null)}><X size={20} /></button>
+           </div>
+           <div className="modal-content">
+             {renameSuggestions.length === 0 ? (
+               <p style={{ padding: '16px 0', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                 No messy names found — every installed pack folder already looks clean.
+               </p>
+             ) : (
+               <div className="duplicate-groups">
+                 <p style={{ marginBottom: 12, color: 'var(--text-secondary)', fontSize: 13 }}>
+                   Found {renameSuggestions.length} pack folder{renameSuggestions.length > 1 ? 's' : ''} with leftover decorations from older installs. Review and apply the suggested names below.
+                 </p>
+                 {renameSuggestions.map((s) => (
+                   <div key={s.path} className="duplicate-pack-row">
+                     <label style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0, cursor: 'pointer' }}>
+                       <input
+                         type="checkbox"
+                         checked={selectedRenames.has(s.path)}
+                         onChange={() => toggleRenameSelection(s.path)}
+                       />
+                       <div className="duplicate-pack-info" style={{ minWidth: 0 }}>
+                         <span className="duplicate-pack-type">{packTypeLabels[s.pack_type] ?? s.pack_type}</span>
+                         <span className="duplicate-pack-folder" title={s.path} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                           <span style={{ textDecoration: 'line-through', opacity: 0.6 }}>{s.current_name}</span>
+                           <span style={{ color: 'var(--primary-color)' }}>{s.suggested_name}</span>
+                         </span>
+                       </div>
+                     </label>
+                   </div>
+                 ))}
+               </div>
+             )}
+           </div>
+           <div className="modal-actions" style={{ gap: 8 }}>
+             <button className="btn btn-secondary" onClick={() => setRenameSuggestions(null)}>Close</button>
+             {renameSuggestions.length > 0 && (
+               <button
+                 className="btn btn-primary"
+                 onClick={handleApplyRenames}
+                 disabled={selectedRenames.size === 0 || isApplyingRenames}
+               >
+                 {isApplyingRenames ? 'Renaming...' : `Apply Selected (${selectedRenames.size})`}
+               </button>
+             )}
            </div>
          </div>
        </div>

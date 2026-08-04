@@ -9,6 +9,8 @@ export interface PackInfo {
   extracted: boolean;
   icon_base64?: string;
   subfolder?: string;
+  /** Set when this pack's payload is a nested .mcpack entry inside a .mcaddon rather than a loose folder. */
+  nested_mcpack?: string;
   folder_size?: number;
   folder_size_formatted?: string;
   needs_attention?: boolean;
@@ -29,6 +31,7 @@ export interface Settings {
   scan_location?: string;
   dry_run: boolean;
   delete_source: boolean;
+  delete_file_on_remove?: boolean;
   disable_animations?: boolean;
   animation_speed_ms?: number;
   ui_scale?: number;
@@ -42,6 +45,8 @@ export interface Settings {
   background_style?: BackgroundStyle;
   background_smoke?: number;
   background_blobs?: number;
+  delete_old_on_update?: boolean;
+  remember_scan_location?: boolean;
 }
 
 export type ThemeName = 'darkred' | 'minecraft';
@@ -99,8 +104,44 @@ export interface PackStats {
   total_size_formatted: string;
 }
 
+export interface DuplicatePack {
+  uuid: string;
+  name: string;
+  pack_type: string;
+  path: string;
+  folder_name: string;
+}
+
+export interface DuplicateGroup {
+  uuid: string;
+  name: string;
+  packs: DuplicatePack[];
+}
+
+export interface RenameSuggestion {
+  path: string;
+  current_name: string;
+  suggested_name: string;
+  pack_type: string;
+}
+
+export interface RenameResult {
+  path: string;
+  new_path?: string;
+  error?: string;
+}
+
+export interface RecycledPackInfo {
+  recycle_path: string;
+  original_path: string;
+  name: string;
+  deleted_at: number;
+  size: number;
+  size_formatted: string;
+}
+
 export function getPackKey(pack: PackInfo): string {
-  return `${pack.path}::${pack.subfolder || ''}`;
+  return `${pack.path}::${pack.subfolder || pack.nested_mcpack || ''}`;
 }
 
 export const PackTypeLabels: Record<PackType, string> = {

@@ -1,5 +1,5 @@
 import { X, ExternalLink, HelpCircle, Package, Users, Globe, Lock } from 'lucide-react';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { invoke } from '@tauri-apps/api/core';
 import '../styles/HelpPage.css';
 
 interface HelpPageProps {
@@ -7,9 +7,9 @@ interface HelpPageProps {
 }
 
 export function HelpPage({ onClose }: HelpPageProps) {
-  const openGitHub = async (path: string = '') => {
+  const openGitHub = async (page: 'repository' | 'issues' | 'discussions') => {
     try {
-      await openUrl(`https://github.com/MrLabRat/BlockBench-BR${path}`);
+      await invoke('open_help_page', { page });
     } catch (error) {
       console.error('Failed to open URL:', error);
     }
@@ -83,7 +83,7 @@ export function HelpPage({ onClose }: HelpPageProps) {
               Blocksmith cannot encrypt 4D skins the way SkinMaster does. For full 4D skin pack functionality, 
               please use SkinMaster directly.
             </p>
-            <button className="btn btn-secondary btn-sm" onClick={() => openGitHub('')}>
+            <button className="btn btn-secondary btn-sm" onClick={() => openGitHub('repository')}>
               <ExternalLink size={14} /> Learn More
             </button>
           </div>
@@ -133,13 +133,13 @@ export function HelpPage({ onClose }: HelpPageProps) {
             <h4><Globe size={18} /> Feedback & Support</h4>
             <p>Found a bug or have a feature request? Visit the GitHub repository:</p>
             <div className="feedback-buttons">
-              <button className="btn btn-primary" onClick={() => openGitHub('/issues')}>
+              <button className="btn btn-primary" onClick={() => openGitHub('issues')}>
                 <ExternalLink size={16} /> Report an Issue
               </button>
-              <button className="btn btn-secondary" onClick={() => openGitHub('/discussions')}>
+              <button className="btn btn-secondary" onClick={() => openGitHub('discussions')}>
                 <ExternalLink size={16} /> Discussions
               </button>
-              <button className="btn btn-secondary" onClick={() => openGitHub()}>
+              <button className="btn btn-secondary" onClick={() => openGitHub('repository')}>
                 <ExternalLink size={16} /> View Repository
               </button>
             </div>

@@ -115,7 +115,7 @@
 }
 
 [data-theme="minecraft"] .menu-item {
-  font-family: 'Minecraft', 'Courier New', monospace;
+  font-family: 'Minecraft', 'Press Start 2P', 'Courier New', monospace;
 }
 
 [data-theme="minecraft"] .menu-item:hover {

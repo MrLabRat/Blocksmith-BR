@@ -11,18 +11,30 @@ export function cleanDisplayName(name: string): string {
 
   const suffixes = [
     /\s*\(SKIN_PACK\)/i,
+    /\s*\[SKIN_PACK\]/i,
     /\s*\(SKIN\)/i,
+    /\s*\[SKIN\]/i,
     /\s*\(WORLD_TEMPLATE\)/i,
+    /\s*\[WORLD_TEMPLATE\]/i,
     /\s*\(MASHUP\)/i,
+    /\s*\[MASHUP\]/i,
     /\s*\(MASH-UP\)/i,
+    /\s*\[MASH-UP\]/i,
     /\s*\(RESOURCES\)/i,
+    /\s*\[RESOURCES\]/i,
     /\s*\(RESOURCE\)/i,
+    /\s*\[RESOURCE\]/i,
     /\s*\(BEHAVIOR\)/i,
+    /\s*\[BEHAVIOR\]/i,
     /\s*\(BP\)/i,
+    /\s*\[BP\]/i,
     /\s*\(RP\)/i,
+    /\s*\[RP\]/i,
     /\s*\(ADDON\)/i,
+    /\s*\[ADDON\]/i,
     /\s*\(addon\)/i,
     /\s*\(TEMPLATE\)/i,
+    /\s*\[TEMPLATE\]/i,
     /\s*-\s*ppack0/i,
     /\s*-\s*ppack1/i,
   ];
@@ -50,7 +62,7 @@ export function getBestDisplayName(pack: PackInfo): string {
   if (pack.name && pack.name.trim().length > 0 && !isRawInternalName(pack.name)) {
     return pack.name.trim();
   }
-  const folderName = pack.subfolder ? pack.subfolder : getFolderName(pack.path);
+  const folderName = pack.subfolder || pack.nested_mcpack || getFolderName(pack.path);
   return cleanDisplayName(folderName);
 }
 
@@ -59,20 +71,34 @@ export function getBaseNameForGrouping(folderName: string): string {
   const suffixes = [
     /\.(mcpack|mcaddon|mctemplate)$/i,
     /\s*\(MASHUP\)/i,
+    /\s*\[MASHUP\]/i,
     /\s*\(MASH-UP\)/i,
+    /\s*\[MASH-UP\]/i,
     /\s*\(TEMPLATE\)/i,
+    /\s*\[TEMPLATE\]/i,
     /\s*\(WORLD_TEMPLATE\)/i,
+    /\s*\[WORLD_TEMPLATE\]/i,
     /\s*\(RESOURCES\)/i,
+    /\s*\[RESOURCES\]/i,
     /\s*\(RESOURCE\)/i,
+    /\s*\[RESOURCE\]/i,
     /\s*\(SKINS\)/i,
+    /\s*\[SKINS\]/i,
     /\s*\(SKIN\)/i,
+    /\s*\[SKIN\]/i,
     /\s*\(SKIN_PACK\)/i,
+    /\s*\[SKIN_PACK\]/i,
     /\s*\(ADDON\)/i,
+    /\s*\[ADDON\]/i,
     /\s*\(addon\)/i,
     /\s*\(BEHAVIOR\)/i,
+    /\s*\[BEHAVIOR\]/i,
     /\s*\(BEHAVIOUR\)/i,
+    /\s*\[BEHAVIOUR\]/i,
     /\s*\(BP\)/i,
+    /\s*\[BP\]/i,
     /\s*\(RP\)/i,
+    /\s*\[RP\]/i,
     /\s*Resources$/i,
     /\s*Resource Pack$/i,
     /\s*Skins$/i,
