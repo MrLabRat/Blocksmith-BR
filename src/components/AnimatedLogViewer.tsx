@@ -32,6 +32,26 @@ export function AnimatedLogViewer({ logs }: AnimatedLogViewerProps) {
     }
 
     const st = stateRef.current;
+
+    // App truncates logs from the front once MAX_LOG_ENTRIES is hit. Detect that
+    // rotation and reset so newly appended entries keep animating.
+    if (
+      st.processedCount > logs.length ||
+      (st.processedCount > 0 &&
+        logs.length > 0 &&
+        st.fullTexts[0] &&
+        !st.fullTexts[0].includes(logs[0]?.message ?? '\0'))
+    ) {
+      if (st.rafId !== null) {
+        cancelAnimationFrame(st.rafId);
+        st.rafId = null;
+      }
+      st.fullTexts = [];
+      st.charPositions = [];
+      st.processedCount = 0;
+      setDisplayedLogs([]);
+    }
+
     const newLogs = logs.slice(st.processedCount);
     if (newLogs.length === 0) return;
 

@@ -3,8 +3,9 @@ use zip::ZipArchive;
 mod modules;
 
 use modules::{
-    archive_rejection_reason, scan_single_pack, FileMover, LogEntry, MoveOperation, PackInfo,
-    PackType, Settings,
+    archive_rejection_reason, copy_dir_recursive, move_to_recycle_bin, recycle_bin_root,
+    scan_single_pack, validate_recycle_entry, FileMover, LogEntry, MoveOperation, PackInfo,
+    PackType, RecycledPackInfo, Settings,
 };
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use once_cell::sync::Lazy;
@@ -401,19 +402,31 @@ async fn compute_pack_status(
                     }
                     (None, None) => {
                         pack.is_installed = Some(true);
-                        let old_size =
-                            size_cache.entry(installed.path.clone()).or_insert_with(|| {
-                                let path = std::path::Path::new(&installed.path);
-                                calculate_folder_size(path)
-                            });
-                        if let Some(new_size) = pack.folder_size {
-                            let size_diff = if new_size > *old_size {
-                                new_size as f64 / *old_size as f64
-                            } else {
-                                *old_size as f64 / new_size as f64
-                            };
-                            if size_diff > 1.1 {
-                                pack.is_update = Some(true);
+                        // Archive scans store compressed file size in folder_size, while
+                        // installed packs use on-disk tree size — never compare those units.
+                        if pack.extracted {
+                            let old_size =
+                                size_cache.entry(installed.path.clone()).or_insert_with(|| {
+                                    let path = std::path::Path::new(&installed.path);
+                                    calculate_folder_size(path)
+                                });
+                            if let Some(new_size) = pack.folder_size {
+                                if *old_size == 0 {
+                                    if new_size > 0 {
+                                        pack.is_update = Some(true);
+                                    }
+                                } else {
+                                    let size_diff = if new_size > *old_size {
+                                        new_size as f64 / *old_size as f64
+                                    } else if new_size == 0 {
+                                        f64::INFINITY
+                                    } else {
+                                        *old_size as f64 / new_size as f64
+                                    };
+                                    if size_diff > 1.1 {
+                                        pack.is_update = Some(true);
+                                    }
+                                }
                             }
                         }
                     }
@@ -467,7 +480,23 @@ async fn process_packs(packs: Vec<PackInfo>, app: AppHandle) -> Result<Vec<MoveO
         let semaphore_clone = Arc::clone(&semaphore);
 
         let handle = tokio::spawn(async move {
-            let _permit = semaphore_clone.acquire().await.unwrap();
+            let _permit = match semaphore_clone.acquire().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    results_clone.write().push(MoveOperation {
+                        source: pack.path.clone(),
+                        destination: String::new(),
+                        pack_name: pack.name.clone(),
+                        pack_type: pack.pack_type,
+                        success: false,
+                        error: Some("Processing was interrupted".to_string()),
+                        is_template_update: None,
+                        skin_pack_4d_path: None,
+                        deleted_old_path: None,
+                    });
+                    return;
+                }
+            };
 
             let current = counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
 
@@ -513,7 +542,10 @@ async fn process_packs(packs: Vec<PackInfo>, app: AppHandle) -> Result<Vec<MoveO
         let _ = handle.await;
     }
 
-    let mut final_results = Arc::try_unwrap(results).unwrap().into_inner();
+    let mut final_results = match Arc::try_unwrap(results) {
+        Ok(lock) => lock.into_inner(),
+        Err(shared) => shared.read().clone(),
+    };
 
     if delete_source {
         let source_results: std::collections::HashMap<&str, bool> = final_results.iter().fold(
@@ -849,7 +881,8 @@ fn is_managed_4d_skin_directory(path: &std::path::Path, app: &AppHandle) -> bool
     let Ok(canonical_scan_location) = std::path::Path::new(scan_location).canonicalize() else {
         return false;
     };
-    canonical_path == canonical_scan_location.join("4D Skin Packs")
+    let four_d_root = canonical_scan_location.join("4D Skin Packs");
+    canonical_path == four_d_root || canonical_path.starts_with(&four_d_root)
 }
 
 #[tauri::command]
@@ -865,6 +898,10 @@ fn open_help_page(page: String) -> Result<(), String> {
         .arg(url)
         .spawn()
         .map_err(|e| format!("Failed to open help page: {}", e))?;
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = url;
+    }
     Ok(())
 }
 
@@ -1021,24 +1058,30 @@ fn get_pack_display_name(pack_path: &std::path::Path) -> Option<String> {
 
 #[tauri::command]
 fn open_skinmaster(app: AppHandle) -> Result<(), String> {
-    let temp_dir = std::env::temp_dir().join(format!("Blocksmith-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&temp_dir)
+    let temp_dir = std::env::temp_dir().join("Blocksmith-SkinMaster");
+    std::fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("Failed to create temporary launch directory: {}", e))?;
 
     let skinmaster_path = temp_dir.join("SkinMaster.exe");
-    let mut skinmaster_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&skinmaster_path)
-        .map_err(|e| format!("Failed to create SkinMaster executable: {}", e))?;
-    use std::io::Write;
-    skinmaster_file
-        .write_all(SKINMASTER_EXE)
-        .map_err(|e| format!("Failed to extract SkinMaster.exe: {}", e))?;
-    skinmaster_file
-        .sync_all()
-        .map_err(|e| format!("Failed to finalize SkinMaster.exe: {}", e))?;
-    drop(skinmaster_file);
+    let needs_extract = match std::fs::metadata(&skinmaster_path) {
+        Ok(meta) => meta.len() as usize != SKINMASTER_EXE.len(),
+        Err(_) => true,
+    };
+    if needs_extract {
+        let mut skinmaster_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&skinmaster_path)
+            .map_err(|e| format!("Failed to create SkinMaster executable: {}", e))?;
+        use std::io::Write;
+        skinmaster_file
+            .write_all(SKINMASTER_EXE)
+            .map_err(|e| format!("Failed to extract SkinMaster.exe: {}", e))?;
+        skinmaster_file
+            .sync_all()
+            .map_err(|e| format!("Failed to finalize SkinMaster.exe: {}", e))?;
+    }
 
     std::process::Command::new(&skinmaster_path)
         .current_dir(&temp_dir)
@@ -1073,22 +1116,6 @@ fn open_premium_cache() -> Result<(), String> {
     Err("Premium cache folder not found".to_string())
 }
 
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String> {
-    for entry in std::fs::read_dir(src).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let src_entry = entry.path();
-        let dst_entry = dst.join(entry.file_name());
-
-        if src_entry.is_dir() {
-            std::fs::create_dir_all(&dst_entry).map_err(|e| e.to_string())?;
-            copy_dir_recursive(&src_entry, &dst_entry)?;
-        } else {
-            std::fs::copy(&src_entry, &dst_entry).map_err(|e| e.to_string())?;
-        }
-    }
-    Ok(())
-}
-
 #[tauri::command]
 fn import_4d_skin_to_premium(
     skin_pack_path: String,
@@ -1115,19 +1142,39 @@ fn import_4d_skin_to_premium(
     } else {
         return Err("Could not determine AppData directory".to_string());
     };
-    if !premium_path.starts_with(&allowed_base) {
+    let canonical_premium = premium_path
+        .canonicalize()
+        .map_err(|_| "Premium pack folder does not exist".to_string())?;
+    let canonical_base = allowed_base
+        .canonicalize()
+        .map_err(|_| "Premium cache skin_packs directory was not found".to_string())?;
+    if !canonical_premium.starts_with(&canonical_base) {
         return Err(
             "premium_pack_path is outside the premium cache skin_packs directory".to_string(),
         );
     }
-
-    if !skin_path.exists() {
-        return Err("4D skin pack folder does not exist".to_string());
+    if !canonical_premium.is_dir() || canonical_premium.parent() != Some(canonical_base.as_path()) {
+        return Err("premium_pack_path must be a direct premium cache skin pack folder".to_string());
     }
 
-    if !premium_path.exists() {
-        return Err("Premium pack folder does not exist".to_string());
+    let canonical_skin = skin_path
+        .canonicalize()
+        .map_err(|_| "4D skin pack folder does not exist".to_string())?;
+    if !canonical_skin.is_dir() {
+        return Err("4D skin pack path is not a directory".to_string());
     }
+    if !is_managed_4d_skin_directory(&canonical_skin, &app)
+        && canonical_skin
+            .parent()
+            .is_none_or(|parent| !is_managed_4d_skin_directory(parent, &app))
+    {
+        return Err(
+            "4D skin pack must be inside the managed 4D Skin Packs directory".to_string(),
+        );
+    }
+
+    let premium_path = canonical_premium.as_path();
+    let skin_path = canonical_skin.as_path();
 
     let texts_folder = premium_path.join("texts");
     if texts_folder.exists() {
@@ -1141,6 +1188,15 @@ fn import_4d_skin_to_premium(
         let src_path = entry.path();
         let file_name = entry.file_name();
         let dst_path = premium_path.join(&file_name);
+        let metadata = std::fs::symlink_metadata(&src_path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            emit_log(
+                &app,
+                "WARN",
+                &format!("Skipping symlink during 4D import: {:?}", file_name),
+            );
+            continue;
+        }
 
         if file_name == "manifest.json" {
             emit_log(
@@ -1151,7 +1207,7 @@ fn import_4d_skin_to_premium(
             continue;
         }
 
-        if src_path.is_dir() {
+        if metadata.is_dir() {
             if dst_path.exists() {
                 std::fs::remove_dir_all(&dst_path)
                     .map_err(|e| format!("Failed to remove existing folder: {}", e))?;
@@ -1311,12 +1367,20 @@ fn watch_scan_folder(path: String, app: AppHandle) -> Result<(), String> {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("Failed to create scan folder watcher: {}", e);
+                app_clone
+                    .state::<AppState>()
+                    .scan_watching
+                    .store(false, Ordering::SeqCst);
                 return;
             }
         };
 
         if let Err(e) = watcher.watch(&scan_path, RecursiveMode::NonRecursive) {
             eprintln!("Failed to watch scan folder: {}", e);
+            app_clone
+                .state::<AppState>()
+                .scan_watching
+                .store(false, Ordering::SeqCst);
             return;
         }
 
@@ -1488,8 +1552,11 @@ fn watch_premium_cache(app: AppHandle) -> Result<(), String> {
     *app.state::<AppState>().watch_stop_tx.lock() = Some(stop_tx);
 
     let app_clone = app.clone();
+    let app_for_log = app.clone();
 
     std::thread::spawn(move || {
+        let app_for_events = app_clone.clone();
+        let app_for_reset = app_clone;
         let mut watcher: notify::RecommendedWatcher = match Watcher::new(
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
@@ -1524,7 +1591,7 @@ fn watch_premium_cache(app: AppHandle) -> Result<(), String> {
                             details,
                         };
 
-                        let _ = app_clone.emit("watcher-event", watcher_event);
+                        let _ = app_for_events.emit("watcher-event", watcher_event);
                     }
                 }
             },
@@ -1533,17 +1600,25 @@ fn watch_premium_cache(app: AppHandle) -> Result<(), String> {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("Failed to create watcher: {}", e);
+                app_for_reset
+                    .state::<AppState>()
+                    .watching
+                    .store(false, Ordering::SeqCst);
                 return;
             }
         };
 
         if let Err(e) = watcher.watch(&premium_cache, RecursiveMode::Recursive) {
             eprintln!("Failed to watch: {}", e);
+            app_for_reset
+                .state::<AppState>()
+                .watching
+                .store(false, Ordering::SeqCst);
             return;
         }
 
         emit_log(
-            &app,
+            &app_for_log,
             "INFO",
             &format!("Watching: {}", premium_cache.display()),
         );
@@ -1844,14 +1919,14 @@ async fn get_installed_packs_stats(_app: AppHandle) -> Result<Vec<PackStats>, St
 }
 
 #[tauri::command]
-fn launch_minecraft(app: AppHandle) -> Result<(), String> {
+fn launch_minecraft(_app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
             .args(["/C", "start", "minecraft:"])
             .spawn()
             .map_err(|e| format!("Failed to launch Minecraft: {}", e))?;
-        emit_log(&app, "INFO", "Launched Minecraft");
+        emit_log(&_app, "INFO", "Launched Minecraft");
     }
     Ok(())
 }
@@ -2730,74 +2805,6 @@ fn is_direct_managed_pack_directory(path: &std::path::Path, app: &AppHandle) -> 
     })
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RecycledPackInfo {
-    pub recycle_path: String,
-    pub original_path: String,
-    pub name: String,
-    pub deleted_at: u64,
-    pub size: u64,
-    pub size_formatted: String,
-}
-
-fn recycle_bin_root() -> Result<PathBuf, String> {
-    let config_dir =
-        dirs::config_dir().ok_or_else(|| "Could not determine config directory".to_string())?;
-    let root = config_dir.join("blocksmith").join("recycle_bin");
-    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
-    Ok(root)
-}
-
-/// Moves a managed pack directory into the recycle bin instead of permanently deleting it,
-/// recording the original location in a sidecar `.meta.json` so it can be restored later.
-fn move_to_recycle_bin(path: &std::path::Path) -> Result<(), String> {
-    let root = recycle_bin_root()?;
-    let folder_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("pack");
-    let sanitized = modules::pack_detector::sanitize_filename_component(folder_name);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis() as u64;
-    let dest_name = format!("{}__{}", now, sanitized);
-    let dest_path = root.join(&dest_name);
-
-    // `rename` only works within the same volume. The recycle bin lives under the user's
-    // config directory, which may be on a different drive than the pack being deleted, so
-    // fall back to a recursive copy + remove for cross-volume moves.
-    if std::fs::rename(path, &dest_path).is_err() {
-        copy_dir_recursive(path, &dest_path)?;
-        std::fs::remove_dir_all(path)
-            .map_err(|e| format!("Failed to remove original after copy: {}", e))?;
-    }
-
-    let meta = serde_json::json!({
-        "original_path": path.to_string_lossy(),
-        "deleted_at": now,
-    });
-    let meta_path = root.join(format!("{}.meta.json", dest_name));
-    std::fs::write(
-        &meta_path,
-        serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-
-    Ok(())
-}
-
-/// Validates that `recycle_path` is a direct child of the recycle bin root (preventing
-/// path traversal) and returns the canonicalized recycle bin root and entry path.
-fn validate_recycle_entry(recycle_path: &str) -> Result<(PathBuf, PathBuf), String> {
-    let root = recycle_bin_root()?;
-    let canonical_root = root.canonicalize().map_err(|e| e.to_string())?;
-    let canonical_path = std::path::Path::new(recycle_path)
-        .canonicalize()
-        .map_err(|_| "Recycle bin item not found".to_string())?;
-    if canonical_path.parent() != Some(canonical_root.as_path()) {
-        return Err("Path is not a recycle bin item".to_string());
-    }
-    Ok((canonical_root, canonical_path))
-}
-
 #[tauri::command]
 fn list_recycled_packs() -> Result<Vec<RecycledPackInfo>, String> {
     let root = recycle_bin_root()?;
@@ -2851,8 +2858,53 @@ fn list_recycled_packs() -> Result<Vec<RecycledPackInfo>, String> {
     Ok(results)
 }
 
+fn is_allowed_restore_parent(parent: &std::path::Path, app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let settings = state.settings.read();
+    let configured: Vec<&String> = [
+        settings.behavior_pack_path.as_ref(),
+        settings.resource_pack_path.as_ref(),
+        settings.skin_pack_path.as_ref(),
+        settings.skin_pack_4d_path.as_ref(),
+        settings.world_template_path.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for dir in configured {
+        let base = std::path::Path::new(dir);
+        if parent == base {
+            return true;
+        }
+        if let (Ok(canonical_parent), Ok(canonical_base)) =
+            (parent.canonicalize(), base.canonicalize())
+        {
+            if canonical_parent == canonical_base {
+                return true;
+            }
+        }
+    }
+
+    if let Some(scan_location) = settings.scan_location.as_ref() {
+        let four_d = std::path::Path::new(scan_location).join("4D Skin Packs");
+        if parent == four_d.as_path() {
+            return true;
+        }
+        if let (Ok(canonical_parent), Ok(canonical_four_d)) =
+            (parent.canonicalize(), four_d.canonicalize())
+        {
+            if canonical_parent == canonical_four_d {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 #[tauri::command]
-fn restore_recycled_pack(recycle_path: String) -> Result<String, String> {
+fn restore_recycled_pack(recycle_path: String, app: AppHandle) -> Result<String, String> {
     let (root, canonical_path) = validate_recycle_entry(&recycle_path)?;
     let name = canonical_path
         .file_name()
@@ -2868,11 +2920,15 @@ fn restore_recycled_pack(recycle_path: String) -> Result<String, String> {
         .and_then(|s| s.as_str())
         .ok_or("Missing original path in recycle bin metadata")?;
     let original_path = std::path::Path::new(original_path_str);
+    let parent = original_path.parent().ok_or("Invalid original path")?;
+
+    if !is_allowed_restore_parent(parent, &app) {
+        return Err("Restore destination is outside configured pack directories".to_string());
+    }
 
     if original_path.exists() {
         return Err("A pack already exists at the original location".to_string());
     }
-    let parent = original_path.parent().ok_or("Invalid original path")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
 
     if std::fs::rename(&canonical_path, original_path).is_err() {

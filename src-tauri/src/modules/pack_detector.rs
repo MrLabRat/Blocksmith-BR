@@ -17,12 +17,24 @@ const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ICON_BYTES: usize = 8 * 1024 * 1024;
 
+fn contains_windows_path_separator(value: &str) -> bool {
+    value.contains('\\')
+        || (value.chars().nth(1) == Some(':')
+            && value
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic()))
+}
+
 fn validated_relative_path(value: &str, field: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
     let mut components = path.components();
     let is_single_normal_component =
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
-    if value.is_empty() || !is_single_normal_component {
+    if value.is_empty()
+        || contains_windows_path_separator(value)
+        || !is_single_normal_component
+    {
         return Err(format!(
             "Invalid {}: must be a relative path without separators or traversal",
             field
@@ -77,6 +89,7 @@ pub fn sanitize_filename_component(name: &str) -> String {
 fn validated_archive_path(value: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
     if value.is_empty()
+        || contains_windows_path_separator(value)
         || path
             .components()
             .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
@@ -255,7 +268,7 @@ pub fn scan_single_pack(file_path: &Path) -> Vec<PackInfo> {
     }]
 }
 
-fn is_mashup_name(name: &str) -> bool {
+pub(crate) fn is_mashup_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("mashup") || lower.contains("mash-up") || lower.contains("mash up")
 }
@@ -486,8 +499,10 @@ fn process_multi_pack_archive(
             get_pack_info_from_subfolder(archive, subfolder);
         let icon = extract_icon_from_archive(archive, subfolder);
 
-        // Override to MashupPack if filename indicates mash-up
-        if is_mashup {
+        // Only promote world templates to MashupPack. BP/RP/Skin halves of a
+        // mash-up addon must keep their own types so they land in the correct
+        // destination folders (same rule as installed-pack stats).
+        if is_mashup && pack_type == PackType::WorldTemplate {
             pack_type = PackType::MashupPack;
         }
 
@@ -647,7 +662,7 @@ fn process_nested_mcpack_archive<R: Read + Seek>(
             continue;
         };
 
-        if is_mashup {
+        if is_mashup && pack_type == PackType::WorldTemplate {
             pack_type = PackType::MashupPack;
         }
 
@@ -1180,13 +1195,41 @@ fn open_extract_source(
 
     let mut outer = ZipArchive::new(std::io::BufReader::new(file))
         .map_err(|e| format!("Failed to read archive: {}", e))?;
-    let mut bytes = Vec::new();
-    outer
+    let mut entry = outer
         .by_name(entry_name)
-        .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?
+        .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?;
+    if entry.size() > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+        return Err(format!(
+            "Nested pack '{}' exceeds the {} byte size limit",
+            entry_name, MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        ));
+    }
+    let mut bytes = Vec::new();
+    let mut limited = (&mut entry).take(MAX_ARCHIVE_UNCOMPRESSED_BYTES.saturating_add(1));
+    limited
         .read_to_end(&mut bytes)
         .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?;
+    if bytes.len() as u64 > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+        return Err(format!(
+            "Nested pack '{}' exceeded the {} byte size limit while reading",
+            entry_name, MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        ));
+    }
     Ok(Box::new(Cursor::new(bytes)))
+}
+
+/// Returns the archive entry path relative to `subfolder`, or `None` if the entry
+/// does not belong under that subfolder. Requires a path-component boundary so that
+/// a subfolder named `ppack0` does not incorrectly match `ppack01/...`.
+fn relative_path_under_subfolder<'a>(name: &'a str, subfolder: &str) -> Option<&'a str> {
+    let prefix = format!("{}/", subfolder);
+    if let Some(rest) = name.strip_prefix(prefix.as_str()) {
+        Some(rest)
+    } else if name == subfolder || name == prefix.as_str() {
+        Some("")
+    } else {
+        None
+    }
 }
 
 pub fn extract_pack_to_destination(
@@ -1277,14 +1320,9 @@ pub fn extract_pack_to_destination(
             }
 
             let relative_path = if let Some(sf) = subfolder {
-                if name.starts_with(&format!("{}/", sf)) {
-                    name.strip_prefix(&format!("{}/", sf)).unwrap_or(name)
-                } else if name.starts_with(sf) {
-                    name.strip_prefix(sf)
-                        .unwrap_or(name)
-                        .trim_start_matches('/')
-                } else {
-                    continue;
+                match relative_path_under_subfolder(name, sf) {
+                    Some(rest) => rest,
+                    None => continue,
                 }
             } else {
                 name
@@ -1322,14 +1360,17 @@ pub fn extract_pack_to_destination(
 
         const BUFFER_SIZE: usize = 256 * 1024;
         let mut buffer = vec![0u8; BUFFER_SIZE];
+        let mut total_written = 0u64;
 
         for (i, outpath) in files_to_extract {
             let mut zip_file = archive
                 .by_index(i)
                 .map_err(|e| format!("Failed to read entry: {}", e))?;
+            let declared_size = zip_file.size();
             let mut outfile =
                 fs::File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
             let mut writer = std::io::BufWriter::with_capacity(BUFFER_SIZE, &mut outfile);
+            let mut entry_written = 0u64;
 
             loop {
                 let bytes_read = zip_file
@@ -1337,6 +1378,26 @@ pub fn extract_pack_to_destination(
                     .map_err(|e| format!("Failed to read: {}", e))?;
                 if bytes_read == 0 {
                     break;
+                }
+                entry_written = entry_written
+                    .checked_add(bytes_read as u64)
+                    .ok_or_else(|| "Archive entry size overflow".to_string())?;
+                if entry_written > MAX_ARCHIVE_ENTRY_BYTES
+                    || (declared_size > 0 && entry_written > declared_size)
+                {
+                    return Err(format!(
+                        "Archive entry exceeded size limit while extracting: {}",
+                        outpath.display()
+                    ));
+                }
+                total_written = total_written
+                    .checked_add(bytes_read as u64)
+                    .ok_or_else(|| "Archive size overflow while extracting".to_string())?;
+                if total_written > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+                    return Err(format!(
+                        "Archive expanded past the {} byte limit while extracting",
+                        MAX_ARCHIVE_UNCOMPRESSED_BYTES
+                    ));
                 }
                 writer
                     .write_all(&buffer[..bytes_read])
@@ -1372,8 +1433,14 @@ pub fn extract_pack_to_destination(
     }
 
     if had_existing_destination {
-        fs::remove_dir_all(&backup_path)
-            .map_err(|e| format!("Failed to remove replaced pack backup: {}", e))?;
+        if let Err(error) = fs::remove_dir_all(&backup_path) {
+            eprintln!(
+                "Warning: extracted pack at '{}' but failed to remove backup '{}': {}",
+                output_path.display(),
+                backup_path.display(),
+                error
+            );
+        }
     }
 
     Ok(output_path.to_string_lossy().to_string())
@@ -1382,9 +1449,9 @@ pub fn extract_pack_to_destination(
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_pack_name, detect_nested_mcpack_entries, process_nested_mcpack_archive,
-        sanitize_filename_component, suggest_clean_folder_name, validated_archive_path,
-        validated_relative_path, PackType,
+        clean_pack_name, detect_nested_mcpack_entries, is_mashup_name,
+        process_nested_mcpack_archive, relative_path_under_subfolder, sanitize_filename_component,
+        suggest_clean_folder_name, validated_archive_path, validated_relative_path, PackType,
     };
     use std::io::{Cursor, Write};
     use std::path::Path;
@@ -1579,6 +1646,59 @@ mod tests {
         assert_eq!(
             suggest_clean_folder_name("Already Clean (ADDON)", PackType::BehaviorPack),
             "Already Clean (ADDON)"
+        );
+    }
+
+    #[test]
+    fn mashup_name_does_not_retype_behavior_or_resource_packs() {
+        assert!(is_mashup_name("Adventure Mashup"));
+        let mut pack_type = PackType::BehaviorPack;
+        if is_mashup_name("Adventure Mashup") && pack_type == PackType::WorldTemplate {
+            pack_type = PackType::MashupPack;
+        }
+        assert_eq!(pack_type, PackType::BehaviorPack);
+
+        let mut wt = PackType::WorldTemplate;
+        if is_mashup_name("Adventure Mashup") && wt == PackType::WorldTemplate {
+            wt = PackType::MashupPack;
+        }
+        assert_eq!(wt, PackType::MashupPack);
+    }
+
+    #[test]
+    fn rejects_backslash_and_drive_letter_archive_paths_on_all_platforms() {
+        for value in [
+            "folder\\file.txt",
+            "..\\outside.txt",
+            "D:/outside.txt",
+            "e:\\evil",
+        ] {
+            assert!(
+                validated_archive_path(value).is_err(),
+                "{value} should be rejected"
+            );
+            assert!(
+                validated_relative_path(value, "output folder name").is_err(),
+                "{value} should be rejected as relative"
+            );
+        }
+    }
+
+    #[test]
+    fn subfolder_matching_requires_path_component_boundary() {
+        assert_eq!(
+            relative_path_under_subfolder("ppack0/manifest.json", "ppack0"),
+            Some("manifest.json")
+        );
+        assert_eq!(relative_path_under_subfolder("ppack0", "ppack0"), Some(""));
+        assert_eq!(relative_path_under_subfolder("ppack0/", "ppack0"), Some(""));
+        assert_eq!(
+            relative_path_under_subfolder("ppack01/manifest.json", "ppack0"),
+            None
+        );
+        assert_eq!(
+            relative_path_under_subfolder("ppack0_extra/file.txt", "ppack0"),
+            None
         );
     }
 }

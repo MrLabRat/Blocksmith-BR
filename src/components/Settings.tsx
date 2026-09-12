@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { Settings as SettingsType, PackType, BackgroundStyle } from '../types';
@@ -8,6 +9,7 @@ interface SettingsProps {
   onSettingsChange: (settings: SettingsType) => void;
   isOpen: boolean;
   onClose: () => void;
+  onError?: (title: string, message: string) => void;
 }
 
 const pathConfigs: { key: keyof SettingsType; label: string; packType: PackType }[] = [
@@ -33,7 +35,15 @@ function getIconPath(style?: string, bordered?: boolean): string {
   return `/icons/${prefix}${suffix}.png`;
 }
 
-export function Settings({ settings, onSettingsChange, isOpen, onClose }: SettingsProps) {
+export function Settings({ settings, onSettingsChange, isOpen, onClose, onError }: SettingsProps) {
+  const [draft, setDraft] = useState(settings);
+
+  useEffect(() => {
+    if (isOpen) {
+      setDraft(settings);
+    }
+  }, [isOpen, settings]);
+
   const handleSelectPath = async (key: keyof SettingsType) => {
     const selected = await open({
       directory: true,
@@ -42,126 +52,122 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
     });
 
     if (selected && typeof selected === 'string') {
-      onSettingsChange({
-        ...settings,
+      setDraft({
+        ...draft,
         [key]: selected,
       });
     }
   };
 
   const handleDryRunToggle = () => {
-    onSettingsChange({
-      ...settings,
-      dry_run: !settings.dry_run,
+    setDraft({
+      ...draft,
+      dry_run: !draft.dry_run,
     });
   };
 
   const handleDeleteSourceToggle = () => {
-    onSettingsChange({
-      ...settings,
-      delete_source: !settings.delete_source,
+    setDraft({
+      ...draft,
+      delete_source: !draft.delete_source,
     });
   };
 
   const handleDeleteOldOnUpdateToggle = () => {
-    onSettingsChange({
-      ...settings,
-      delete_old_on_update: !(settings.delete_old_on_update ?? true),
+    setDraft({
+      ...draft,
+      delete_old_on_update: !(draft.delete_old_on_update ?? true),
     });
   };
 
   const handleDeleteFileOnRemoveToggle = () => {
-    onSettingsChange({
-      ...settings,
-      delete_file_on_remove: !(settings.delete_file_on_remove ?? true),
+    setDraft({
+      ...draft,
+      delete_file_on_remove: !(draft.delete_file_on_remove ?? true),
     });
   };
 
   const handleRememberScanLocationToggle = () => {
-    const next = !(settings.remember_scan_location ?? true);
-    onSettingsChange({
-      ...settings,
+    const next = !(draft.remember_scan_location ?? true);
+    setDraft({
+      ...draft,
       remember_scan_location: next,
-      scan_location: next ? settings.scan_location : undefined,
+      scan_location: next ? draft.scan_location : undefined,
     });
   };
 
   const handleAnimationsToggle = () => {
-    onSettingsChange({
-      ...settings,
-      disable_animations: !settings.disable_animations,
+    setDraft({
+      ...draft,
+      disable_animations: !draft.disable_animations,
     });
   };
 
   const handleAnimationSpeedChange = (speedMs: number) => {
-    onSettingsChange({
-      ...settings,
+    setDraft({
+      ...draft,
       animation_speed_ms: speedMs,
     });
   };
 
   const handleUiScaleChange = (scale: number) => {
-    onSettingsChange({
-      ...settings,
+    setDraft({
+      ...draft,
       ui_scale: scale,
     });
   };
 
   const handleTaskbarIconStyleChange = (style: 'blackred' | 'default') => {
-    const newSettings = {
-      ...settings,
+    setDraft({
+      ...draft,
       taskbar_icon_style: style,
-    };
-    onSettingsChange(newSettings);
-    updateWindowIcon(style, settings.taskbar_icon_border !== false);
+    });
   };
 
   const handleTaskbarIconBorderToggle = () => {
-    const newBordered = settings.taskbar_icon_border === false;
-    const newSettings = {
-      ...settings,
+    const newBordered = draft.taskbar_icon_border === false;
+    setDraft({
+      ...draft,
       taskbar_icon_border: newBordered,
-    };
-    onSettingsChange(newSettings);
-    updateWindowIcon(settings.taskbar_icon_style || 'blackred', newBordered);
+    });
   };
 
   const handleAppIconStyleChange = (style: 'blackred' | 'default') => {
-    onSettingsChange({
-      ...settings,
+    setDraft({
+      ...draft,
       app_icon_style: style,
     });
   };
 
   const handleAppIconBorderToggle = () => {
-    onSettingsChange({
-      ...settings,
-      app_icon_border: settings.app_icon_border === false,
+    setDraft({
+      ...draft,
+      app_icon_border: draft.app_icon_border === false,
     });
   };
 
   const handleDebugModeToggle = () => {
-    onSettingsChange({
-      ...settings,
-      debug_mode: !settings.debug_mode,
+    setDraft({
+      ...draft,
+      debug_mode: !draft.debug_mode,
     });
   };
 
   const handleThemeChange = (theme: 'darkred' | 'minecraft') => {
     const defaultBg: BackgroundStyle = theme === 'minecraft' ? 'mc-terrain' : 'embers';
-    onSettingsChange({ ...settings, theme, background_style: defaultBg });
+    setDraft({ ...draft, theme, background_style: defaultBg });
   };
 
   const handleBackgroundStyleChange = (bg: BackgroundStyle) => {
-    onSettingsChange({ ...settings, background_style: bg });
+    setDraft({ ...draft, background_style: bg });
   };
 
   const handleSmokeChange = (v: number) => {
-    onSettingsChange({ ...settings, background_smoke: v });
+    setDraft({ ...draft, background_smoke: v });
   };
 
   const handleBlobsChange = (v: number) => {
-    onSettingsChange({ ...settings, background_blobs: v });
+    setDraft({ ...draft, background_blobs: v });
   };
 
   const updateWindowIcon = async (style: string, bordered: boolean) => {
@@ -175,25 +181,30 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
   const handleAutoDetect = async () => {
     try {
       const detected = await invoke<SettingsType>('auto_detect_paths');
-      onSettingsChange({
-        ...settings,
-        behavior_pack_path: detected.behavior_pack_path ?? settings.behavior_pack_path,
-        resource_pack_path: detected.resource_pack_path ?? settings.resource_pack_path,
-        skin_pack_path: detected.skin_pack_path ?? settings.skin_pack_path,
-        world_template_path: detected.world_template_path ?? settings.world_template_path,
-        scan_location: detected.scan_location ?? settings.scan_location,
+      setDraft({
+        ...draft,
+        behavior_pack_path: detected.behavior_pack_path ?? draft.behavior_pack_path,
+        resource_pack_path: detected.resource_pack_path ?? draft.resource_pack_path,
+        skin_pack_path: detected.skin_pack_path ?? draft.skin_pack_path,
+        world_template_path: detected.world_template_path ?? draft.world_template_path,
+        scan_location: detected.scan_location ?? draft.scan_location,
       });
     } catch (error) {
-      console.error('Auto-detect failed:', error);
+      onError?.('Auto-Detect Failed', `${error}`);
     }
   };
 
   const handleSave = async () => {
     try {
-      await invoke('save_settings', { settings });
+      await invoke('save_settings', { settings: draft });
+      onSettingsChange(draft);
+      await updateWindowIcon(
+        draft.taskbar_icon_style || 'blackred',
+        draft.taskbar_icon_border !== false
+      );
       onClose();
     } catch (error) {
-      console.error('Failed to save settings:', error);
+      onError?.('Save Failed', `${error}`);
     }
   };
 
@@ -224,10 +235,10 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <div className="path-input">
                   <input
                     type="text"
-                    value={(settings[key] as string) || ''}
+                    value={(draft[key] as string) || ''}
                     onChange={(e) =>
-                      onSettingsChange({
-                        ...settings,
+                      setDraft({
+                        ...draft,
                         [key]: e.target.value || undefined,
                       })
                     }
@@ -249,7 +260,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Prefill the scan folder from your last scan on startup</span>
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.remember_scan_location ?? true} onChange={handleRememberScanLocationToggle} />
+                <input type="checkbox" checked={draft.remember_scan_location ?? true} onChange={handleRememberScanLocationToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -259,7 +270,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Preview without extracting/moving files</span>
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.dry_run} onChange={handleDryRunToggle} />
+                <input type="checkbox" checked={draft.dry_run} onChange={handleDryRunToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -269,7 +280,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Remove .mcpack/.mcaddon after successful extraction</span>
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.delete_source} onChange={handleDeleteSourceToggle} />
+                <input type="checkbox" checked={draft.delete_source} onChange={handleDeleteSourceToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -279,7 +290,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Remove old pack folder when installing an update</span>
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.delete_old_on_update ?? true} onChange={handleDeleteOldOnUpdateToggle} />
+                <input type="checkbox" checked={draft.delete_old_on_update ?? true} onChange={handleDeleteOldOnUpdateToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -289,7 +300,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Clicking the trash icon on a found pack also deletes the file from disk, so it won't reappear in future scans. Hold Shift to do the opposite.</span>
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.delete_file_on_remove ?? true} onChange={handleDeleteFileOnRemoveToggle} />
+                <input type="checkbox" checked={draft.delete_file_on_remove ?? true} onChange={handleDeleteFileOnRemoveToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -299,7 +310,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Show detailed logs for troubleshooting</span>
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.debug_mode || false} onChange={handleDebugModeToggle} />
+                <input type="checkbox" checked={draft.debug_mode || false} onChange={handleDebugModeToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -311,11 +322,11 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
               <label className="toggle">
                 <input
                   type="checkbox"
-                  checked={!(settings.disable_tip_notifications || false)}
+                  checked={!(draft.disable_tip_notifications || false)}
                   onChange={() =>
-                    onSettingsChange({
-                      ...settings,
-                      disable_tip_notifications: !settings.disable_tip_notifications,
+                    setDraft({
+                      ...draft,
+                      disable_tip_notifications: !draft.disable_tip_notifications,
                     })
                   }
                 />
@@ -335,7 +346,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 {themeOptions.map((option) => (
                   <button
                     key={option.value}
-                    className={`btn ${settings.theme === option.value || (!settings.theme && option.value === 'darkred') ? 'btn-primary' : 'btn-secondary'}`}
+                    className={`btn ${draft.theme === option.value || (!draft.theme && option.value === 'darkred') ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => handleThemeChange(option.value as 'darkred' | 'minecraft')}
                   >
                     {option.label}
@@ -349,15 +360,15 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Turn off all UI animations</span>
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.disable_animations || false} onChange={handleAnimationsToggle} />
+                <input type="checkbox" checked={draft.disable_animations || false} onChange={handleAnimationsToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
-            {!settings.disable_animations && (
+            {!draft.disable_animations && (
               <div className="settings-row animation-speed-row">
                 <label>
                   Animation Speed
-                  <span className="speed-value">{settings.animation_speed_ms ?? 300}ms</span>
+                  <span className="speed-value">{draft.animation_speed_ms ?? 300}ms</span>
                 </label>
                 <div className="animation-controls">
                   <input
@@ -365,7 +376,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                     min="50"
                     max="600"
                     step="10"
-                    value={settings.animation_speed_ms ?? 300}
+                    value={draft.animation_speed_ms ?? 300}
                     onChange={(e) => handleAnimationSpeedChange(parseInt(e.target.value))}
                     className="speed-slider"
                   />
@@ -374,7 +385,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                     onClick={() => {
                       const btn = document.querySelector('.test-animation-btn');
                       btn?.classList.add('animate-test');
-                      setTimeout(() => btn?.classList.remove('animate-test'), settings.animation_speed_ms ?? 300);
+                      setTimeout(() => btn?.classList.remove('animate-test'), draft.animation_speed_ms ?? 300);
                     }}
                   >
                     <Play size={14} />
@@ -388,7 +399,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <span className="hint">Choose the animated background style</span>
               </label>
               <div className="theme-buttons">
-                {(settings.theme === 'minecraft'
+                {(draft.theme === 'minecraft'
                   ? [
                       { value: 'mc-terrain'  as BackgroundStyle, label: 'Terrain' },
                       { value: 'night-sky' as BackgroundStyle, label: 'Night Sky' },
@@ -402,7 +413,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 ).map((opt) => (
                   <button
                     key={opt.value}
-                    className={`btn ${(settings.background_style ?? (settings.theme === 'minecraft' ? 'mc-terrain' : 'embers')) === opt.value ? 'btn-primary' : 'btn-secondary'}`}
+                    className={`btn ${(draft.background_style ?? (draft.theme === 'minecraft' ? 'mc-terrain' : 'embers')) === opt.value ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => handleBackgroundStyleChange(opt.value)}
                   >
                     {opt.label}
@@ -410,19 +421,19 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 ))}
               </div>
             </div>
-            {(settings.background_style ?? (settings.theme === 'minecraft' ? 'mc-terrain' : 'embers')) === 'embers' && (
+            {(draft.background_style ?? (draft.theme === 'minecraft' ? 'mc-terrain' : 'embers')) === 'embers' && (
               <>
                 <div className="settings-row animation-speed-row">
                   <label>
                     Smoke Intensity
-                    <span className="speed-value">{settings.background_smoke ?? 5}/10</span>
+                    <span className="speed-value">{draft.background_smoke ?? 5}/10</span>
                   </label>
                   <input
                     type="range"
                     min="0"
                     max="10"
                     step="1"
-                    value={settings.background_smoke ?? 5}
+                    value={draft.background_smoke ?? 5}
                     onChange={(e) => handleSmokeChange(parseInt(e.target.value))}
                     className="speed-slider"
                   />
@@ -430,14 +441,14 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 <div className="settings-row animation-speed-row">
                   <label>
                     Red Blobs
-                    <span className="speed-value">{settings.background_blobs ?? 5}/10</span>
+                    <span className="speed-value">{draft.background_blobs ?? 5}/10</span>
                   </label>
                   <input
                     type="range"
                     min="0"
                     max="10"
                     step="1"
-                    value={settings.background_blobs ?? 5}
+                    value={draft.background_blobs ?? 5}
                     onChange={(e) => handleBlobsChange(parseInt(e.target.value))}
                     className="speed-slider"
                   />
@@ -453,7 +464,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 {uiScaleOptions.map((scale) => (
                   <button
                     key={scale}
-                    className={`btn ${settings.ui_scale === scale || (!settings.ui_scale && scale === 100) ? 'btn-primary' : 'btn-secondary'}`}
+                    className={`btn ${draft.ui_scale === scale || (!draft.ui_scale && scale === 100) ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => handleUiScaleChange(scale)}
                   >
                     {scale}%
@@ -474,7 +485,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 {iconStyleOptions.map((option) => (
                   <button
                     key={option.value}
-                    className={`btn ${settings.taskbar_icon_style === option.value || (!settings.taskbar_icon_style && option.value === 'blackred') ? 'btn-primary' : 'btn-secondary'}`}
+                    className={`btn ${draft.taskbar_icon_style === option.value || (!draft.taskbar_icon_style && option.value === 'blackred') ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => handleTaskbarIconStyleChange(option.value as 'blackred' | 'default')}
                   >
                     {option.label}
@@ -487,7 +498,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 Icon Border
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.taskbar_icon_border !== false} onChange={handleTaskbarIconBorderToggle} />
+                <input type="checkbox" checked={draft.taskbar_icon_border !== false} onChange={handleTaskbarIconBorderToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -495,7 +506,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
               <label>Preview</label>
               <div className="icon-preview">
                 <img 
-                  src={getIconPath(settings.taskbar_icon_style, settings.taskbar_icon_border)}
+                  src={getIconPath(draft.taskbar_icon_style, draft.taskbar_icon_border)}
                   alt="Taskbar icon preview"
                   className="icon-preview-img"
                 />
@@ -514,7 +525,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 {iconStyleOptions.map((option) => (
                   <button
                     key={option.value}
-                    className={`btn ${settings.app_icon_style === option.value || (!settings.app_icon_style && option.value === 'blackred') ? 'btn-primary' : 'btn-secondary'}`}
+                    className={`btn ${draft.app_icon_style === option.value || (!draft.app_icon_style && option.value === 'blackred') ? 'btn-primary' : 'btn-secondary'}`}
                     onClick={() => handleAppIconStyleChange(option.value as 'blackred' | 'default')}
                   >
                     {option.label}
@@ -527,7 +538,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
                 Icon Border
               </label>
               <label className="toggle">
-                <input type="checkbox" checked={settings.app_icon_border !== false} onChange={handleAppIconBorderToggle} />
+                <input type="checkbox" checked={draft.app_icon_border !== false} onChange={handleAppIconBorderToggle} />
                 <span className="toggle-slider"></span>
               </label>
             </div>
@@ -535,7 +546,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose }: Settin
               <label>Preview</label>
               <div className="icon-preview">
                 <img 
-                  src={getIconPath(settings.app_icon_style, settings.app_icon_border)}
+                  src={getIconPath(draft.app_icon_style, draft.app_icon_border)}
                   alt="In-app icon preview"
                   className="icon-preview-img"
                 />

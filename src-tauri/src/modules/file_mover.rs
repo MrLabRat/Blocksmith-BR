@@ -1,5 +1,8 @@
-use super::pack_detector::{extract_pack_to_destination, sanitize_filename_component};
+use super::pack_detector::{
+    canonical_type_suffix, extract_pack_to_destination, sanitize_filename_component,
+};
 use super::pack_type::{PackInfo, PackType, Settings};
+use super::recycle_bin::move_to_recycle_bin;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -53,13 +56,14 @@ fn strip_pack_suffix(name: &str) -> String {
     result.trim().to_string()
 }
 
-fn find_old_pack_path(
+fn find_old_pack_paths(
     dest_base: &PathBuf,
     pack_name: &str,
     pack_type: PackType,
-) -> Option<PathBuf> {
+) -> Vec<PathBuf> {
+    let mut matches = Vec::new();
     if !dest_base.exists() {
-        return None;
+        return matches;
     }
 
     // Use the same version-aware base-name normalization as update detection
@@ -76,15 +80,7 @@ fn find_old_pack_path(
                     let folder_base = crate::extract_base_name(folder_name);
 
                     if folder_base == base_name {
-                        let type_suffix = match pack_type {
-                            PackType::BehaviorPack => " (ADDON)",
-                            PackType::ResourcePack => " (RESOURCE)",
-                            PackType::SkinPack => " (SKIN)",
-                            PackType::SkinPack4D => "",
-                            PackType::WorldTemplate => " (TEMPLATE)",
-                            PackType::MashupPack => " (MASHUP)",
-                            PackType::Unknown => "",
-                        };
+                        let type_suffix = canonical_type_suffix(pack_type);
 
                         let expected_name = sanitize_filename_component(&format!(
                             "{}{}",
@@ -92,7 +88,7 @@ fn find_old_pack_path(
                             type_suffix
                         ));
                         if folder_name != expected_name {
-                            return Some(entry_path);
+                            matches.push(entry_path);
                         }
                     }
                 }
@@ -100,7 +96,7 @@ fn find_old_pack_path(
         }
     }
 
-    None
+    matches
 }
 
 pub struct FileMover {
@@ -189,33 +185,29 @@ impl FileMover {
             }
         };
 
-        let type_suffix = match pack.pack_type {
-            PackType::BehaviorPack => " (ADDON)",
-            PackType::ResourcePack => " (RESOURCE)",
-            PackType::SkinPack => " (SKIN)",
-            PackType::SkinPack4D => "",
-            PackType::WorldTemplate => " (TEMPLATE)",
-            PackType::MashupPack => " (MASHUP)",
-            PackType::Unknown => "",
-        };
+        let type_suffix = canonical_type_suffix(pack.pack_type);
 
-        let output_name = sanitize_filename_component(&format!("{}{}", pack.name, type_suffix));
+        let output_name = sanitize_filename_component(&format!(
+            "{}{}",
+            strip_pack_suffix(&pack.name),
+            type_suffix
+        ));
         let destination = dest_base.join(&output_name);
 
         let is_template_update = (pack.pack_type == PackType::WorldTemplate
             || pack.pack_type == PackType::MashupPack)
             && destination.exists();
 
-        let old_pack_path = if !is_4d_skin_pack
+        let old_pack_paths = if !is_4d_skin_pack
             && pack.is_update.unwrap_or(false)
             && self.settings.delete_old_on_update.unwrap_or(true)
         {
-            find_old_pack_path(&dest_base, &pack.name, pack.pack_type)
+            find_old_pack_paths(&dest_base, &pack.name, pack.pack_type)
         } else {
-            None
+            Vec::new()
         };
 
-        let old_skin_pack_path = if !is_4d_skin_pack
+        let old_skin_pack_paths = if !is_4d_skin_pack
             && pack.is_update.unwrap_or(false)
             && self.settings.delete_old_on_update.unwrap_or(true)
             && matches!(
@@ -225,11 +217,13 @@ impl FileMover {
                     | PackType::MashupPack
                     | PackType::WorldTemplate
             ) {
-            self.settings.skin_pack_path.as_ref().and_then(|sp| {
-                find_old_pack_path(&PathBuf::from(sp), &pack.name, PackType::SkinPack)
-            })
+            self.settings
+                .skin_pack_path
+                .as_ref()
+                .map(|sp| find_old_pack_paths(&PathBuf::from(sp), &pack.name, PackType::SkinPack))
+                .unwrap_or_default()
         } else {
-            None
+            Vec::new()
         };
 
         if self.settings.dry_run {
@@ -241,20 +235,20 @@ impl FileMover {
                     destination.display()
                 ),
             );
-            if let Some(ref old_path) = old_pack_path {
+            for old_path in &old_pack_paths {
                 self.log(
                     "INFO",
                     &format!(
-                        "[DRY RUN] Would delete old version at '{}'",
+                        "[DRY RUN] Would recycle old version at '{}'",
                         old_path.display()
                     ),
                 );
             }
-            if let Some(ref old_skin) = old_skin_pack_path {
+            for old_skin in &old_skin_pack_paths {
                 self.log(
                     "INFO",
                     &format!(
-                        "[DRY RUN] Would delete old skin pack at '{}'",
+                        "[DRY RUN] Would recycle old skin pack at '{}'",
                         old_skin.display()
                     ),
                 );
@@ -272,7 +266,9 @@ impl FileMover {
                 } else {
                     None
                 },
-                deleted_old_path: old_pack_path.map(|p| p.to_string_lossy().to_string()),
+                deleted_old_path: old_pack_paths
+                    .first()
+                    .map(|p| p.to_string_lossy().to_string()),
             };
         }
 
@@ -294,7 +290,7 @@ impl FileMover {
         let subfolder = pack.subfolder.clone();
         let nested_mcpack = pack.nested_mcpack.clone();
         let output_name_for_extract = output_name.clone();
-        let old_pack_path_clone = old_pack_path.clone();
+        let old_pack_paths_clone = old_pack_paths.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             extract_pack_to_destination(
@@ -319,22 +315,22 @@ impl FileMover {
                     "SUCCESS",
                     &format!("Successfully extracted '{}' to '{}'", pack.name, dest_path),
                 );
-                if let Some(ref old_skin) = old_skin_pack_path {
+                for old_skin in &old_skin_pack_paths {
                     self.log(
                         "INFO",
-                        &format!("Deleting old skin pack at '{}'", old_skin.display()),
+                        &format!("Recycling old skin pack at '{}'", old_skin.display()),
                     );
-                    if let Err(e) = fs::remove_dir_all(old_skin) {
-                        self.log("WARN", &format!("Failed to delete old skin pack: {}", e));
+                    if let Err(e) = move_to_recycle_bin(old_skin) {
+                        self.log("WARN", &format!("Failed to recycle old skin pack: {}", e));
                     }
                 }
-                if let Some(ref old_path) = old_pack_path {
+                for old_path in &old_pack_paths {
                     self.log(
                         "INFO",
-                        &format!("Deleting old version at '{}'", old_path.display()),
+                        &format!("Recycling old version at '{}'", old_path.display()),
                     );
-                    if let Err(e) = fs::remove_dir_all(old_path) {
-                        self.log("WARN", &format!("Failed to delete old version: {}", e));
+                    if let Err(e) = move_to_recycle_bin(old_path) {
+                        self.log("WARN", &format!("Failed to recycle old version: {}", e));
                     }
                 }
                 if is_template_update {
@@ -365,7 +361,9 @@ impl FileMover {
                     } else {
                         None
                     },
-                    deleted_old_path: old_pack_path_clone.map(|p| p.to_string_lossy().to_string()),
+                    deleted_old_path: old_pack_paths_clone
+                        .first()
+                        .map(|p| p.to_string_lossy().to_string()),
                 };
                 self.history.write().push(op.clone());
                 op

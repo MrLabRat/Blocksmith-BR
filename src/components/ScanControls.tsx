@@ -27,7 +27,7 @@ interface ScanControlsProps {
   settings: Settings;
   progress: ProgressEvent | null;
   onScanStart: () => void;
-  onScanComplete: (packs: PackInfo[]) => void;
+  onScanComplete: (packs: PackInfo[] | false, scannedDirectory?: string) => void;
   onMoveStart: () => void;
   onMoveComplete: (results?: MoveOperation[]) => void;
   onError?: (title: string, message: string) => void;
@@ -135,10 +135,11 @@ export function ScanControls({
     onScanStart();
     try {
       const result = await invoke<PackInfo[]>('scan_packs', { directory: path });
-      onScanComplete(result);
+      onScanComplete(result, path);
     } catch (error) {
       console.error('Scan failed:', error);
-      onScanComplete([]);
+      onError?.('Scan Failed', `${error}`);
+      onScanComplete(false, path);
     }
   };
 
@@ -158,6 +159,7 @@ export function ScanControls({
       onMoveComplete(results);
     } catch (error) {
       console.error('Process failed:', error);
+      onError?.('Process Failed', `${error}`);
       onMoveComplete();
     }
   };
