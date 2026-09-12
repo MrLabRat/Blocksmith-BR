@@ -437,11 +437,15 @@ function App() {
     setProgress(null);
     if (ops) {
       setResults(ops);
-      // Auto-copy 4D skin paths to clipboard
       const fourDSkinPacks = ops.filter((r) => r.pack_type === 'SkinPack4D' && r.success);
       if (fourDSkinPacks.length > 0) {
         const path = fourDSkinPacks[0].destination.replace(/ \(4D SKIN\)$/, '');
         navigator.clipboard.writeText(path).catch(() => {});
+      }
+      if (ops.some((r) => r.success) && packsRef.current.length > 0) {
+        invoke<PackInfo[]>('compute_pack_status', { packs: packsRef.current })
+          .then((updated) => setPacks(updated))
+          .catch((error) => console.error('Status refresh failed:', error));
       }
     }
   }, []);
@@ -456,9 +460,9 @@ function App() {
     try {
       await invoke('open_folder', { path });
     } catch (error) {
-      console.error('Failed to open folder:', error);
+      addNotification('error', 'Open Folder Failed', `${error}`);
     }
-  }, []);
+  }, [addNotification]);
 
   const handleCopyPath = useCallback(async (path: string) => {
     try {
@@ -466,11 +470,10 @@ function App() {
       setCopiedPath(path);
       setTimeout(() => setCopiedPath(null), 2000);
     } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
+      addNotification('error', 'Copy Failed', `${error}`);
     }
-  }, []);
+  }, [addNotification]);
 
-  // Pack preview
   const handlePreviewPack = useCallback(async (pack: PackInfo) => {
     setPreviewPack({ pack: { path: pack.path, name: pack.name, subfolder: pack.subfolder } });
     setPreviewFiles([]);
@@ -490,12 +493,11 @@ function App() {
     }
   }, [addNotification]);
 
-  // 4D skin handling
   const handleOpenSkinMaster = async () => {
     try {
       await invoke('open_skinmaster');
     } catch (error) {
-      console.error('Failed to open SkinMaster:', error);
+      addNotification('error', 'SkinMaster Failed', `${error}`);
     }
   };
 

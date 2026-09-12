@@ -1204,6 +1204,20 @@ fn open_extract_source(
     Ok(Box::new(Cursor::new(bytes)))
 }
 
+/// Returns the archive entry path relative to `subfolder`, or `None` if the entry
+/// does not belong under that subfolder. Requires a path-component boundary so that
+/// a subfolder named `ppack0` does not incorrectly match `ppack01/...`.
+fn relative_path_under_subfolder<'a>(name: &'a str, subfolder: &str) -> Option<&'a str> {
+    let prefix = format!("{}/", subfolder);
+    if let Some(rest) = name.strip_prefix(prefix.as_str()) {
+        Some(rest)
+    } else if name == subfolder || name == prefix.as_str() {
+        Some("")
+    } else {
+        None
+    }
+}
+
 pub fn extract_pack_to_destination(
     file_path: &Path,
     destination_dir: &Path,
@@ -1292,14 +1306,9 @@ pub fn extract_pack_to_destination(
             }
 
             let relative_path = if let Some(sf) = subfolder {
-                if name.starts_with(&format!("{}/", sf)) {
-                    name.strip_prefix(&format!("{}/", sf)).unwrap_or(name)
-                } else if name.starts_with(sf) {
-                    name.strip_prefix(sf)
-                        .unwrap_or(name)
-                        .trim_start_matches('/')
-                } else {
-                    continue;
+                match relative_path_under_subfolder(name, sf) {
+                    Some(rest) => rest,
+                    None => continue,
                 }
             } else {
                 name
@@ -1398,8 +1407,8 @@ pub fn extract_pack_to_destination(
 mod tests {
     use super::{
         clean_pack_name, detect_nested_mcpack_entries, is_mashup_name,
-        process_nested_mcpack_archive, sanitize_filename_component, suggest_clean_folder_name,
-        validated_archive_path, validated_relative_path, PackType,
+        process_nested_mcpack_archive, relative_path_under_subfolder, sanitize_filename_component,
+        suggest_clean_folder_name, validated_archive_path, validated_relative_path, PackType,
     };
     use std::io::{Cursor, Write};
     use std::path::Path;
@@ -1630,5 +1639,23 @@ mod tests {
                 "{value} should be rejected as relative"
             );
         }
+    }
+
+    #[test]
+    fn subfolder_matching_requires_path_component_boundary() {
+        assert_eq!(
+            relative_path_under_subfolder("ppack0/manifest.json", "ppack0"),
+            Some("manifest.json")
+        );
+        assert_eq!(relative_path_under_subfolder("ppack0", "ppack0"), Some(""));
+        assert_eq!(relative_path_under_subfolder("ppack0/", "ppack0"), Some(""));
+        assert_eq!(
+            relative_path_under_subfolder("ppack01/manifest.json", "ppack0"),
+            None
+        );
+        assert_eq!(
+            relative_path_under_subfolder("ppack0_extra/file.txt", "ppack0"),
+            None
+        );
     }
 }

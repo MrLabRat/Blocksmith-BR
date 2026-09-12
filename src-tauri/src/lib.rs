@@ -538,7 +538,10 @@ async fn process_packs(packs: Vec<PackInfo>, app: AppHandle) -> Result<Vec<MoveO
         let _ = handle.await;
     }
 
-    let mut final_results = Arc::try_unwrap(results).unwrap().into_inner();
+    let mut final_results = match Arc::try_unwrap(results) {
+        Ok(lock) => lock.into_inner(),
+        Err(shared) => shared.read().clone(),
+    };
 
     if delete_source {
         let source_results: std::collections::HashMap<&str, bool> = final_results.iter().fold(
