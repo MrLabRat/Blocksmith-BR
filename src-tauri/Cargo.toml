@@ -1,6 +1,6 @@
 [package]
 name = "blocksmith"
-version = "2.0.0"
+version = "2.0.1"
 description = "Blocksmith - Minecraft Bedrock Pack Manager"
 authors = ["you"]
 edition = "2021"

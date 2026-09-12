@@ -2,6 +2,20 @@
 
 All notable changes to Blocksmith are documented in this file.
 
+## [2.0.1]
+
+### Fixed
+- Archive path validation now rejects traversal, absolute Windows paths, and backslash separators on all platforms.
+- Zip and nested `.mcpack` extraction enforce per-entry and total uncompressed byte caps.
+- Mash-up naming no longer retypes Behavior Pack or Resource Pack entries as mash-ups.
+- Updating packs recycles old folders instead of permanently deleting them; recycle restore is allowlisted to configured destinations.
+- Size-based update detection skips unextracted archives so compressed file size is not compared to installed folder size.
+- Settings draft changes apply only on Save; Cancel no longer syncs unsaved paths into app state.
+- Scan status merge, auto-scan gating, failed-scan pack wipe, and watcher stuck-flag recovery.
+- 4D Skin Packs folder open and premium import require managed paths; directory copies skip symlinks.
+- SkinMaster launch reuses a stable temp directory and only re-extracts when the embedded EXE is missing or changed.
+- Successful pack replace is no longer reported as failure if backup cleanup fails.
+
 ## [2.0.0]
 
 ### Added
