@@ -136,7 +136,12 @@ export function getIconForPackType(packType: PackType) {
     case 'WorldTemplate':
     case 'MashupPack':
       return Globe;
-    default:
+    case 'Unknown':
       return Box;
+    default: {
+      const _exhaustive: never = packType;
+      void _exhaustive;
+      return Box;
+    }
   }
 }

@@ -17,12 +17,24 @@ const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ICON_BYTES: usize = 8 * 1024 * 1024;
 
+fn contains_windows_path_separator(value: &str) -> bool {
+    value.contains('\\')
+        || (value.chars().nth(1) == Some(':')
+            && value
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic()))
+}
+
 fn validated_relative_path(value: &str, field: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
     let mut components = path.components();
     let is_single_normal_component =
         matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
-    if value.is_empty() || !is_single_normal_component {
+    if value.is_empty()
+        || contains_windows_path_separator(value)
+        || !is_single_normal_component
+    {
         return Err(format!(
             "Invalid {}: must be a relative path without separators or traversal",
             field
@@ -77,6 +89,7 @@ pub fn sanitize_filename_component(name: &str) -> String {
 fn validated_archive_path(value: &str) -> Result<PathBuf, String> {
     let path = Path::new(value);
     if value.is_empty()
+        || contains_windows_path_separator(value)
         || path
             .components()
             .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
@@ -255,7 +268,7 @@ pub fn scan_single_pack(file_path: &Path) -> Vec<PackInfo> {
     }]
 }
 
-fn is_mashup_name(name: &str) -> bool {
+pub(crate) fn is_mashup_name(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.contains("mashup") || lower.contains("mash-up") || lower.contains("mash up")
 }
@@ -486,8 +499,10 @@ fn process_multi_pack_archive(
             get_pack_info_from_subfolder(archive, subfolder);
         let icon = extract_icon_from_archive(archive, subfolder);
 
-        // Override to MashupPack if filename indicates mash-up
-        if is_mashup {
+        // Only promote world templates to MashupPack. BP/RP/Skin halves of a
+        // mash-up addon must keep their own types so they land in the correct
+        // destination folders (same rule as installed-pack stats).
+        if is_mashup && pack_type == PackType::WorldTemplate {
             pack_type = PackType::MashupPack;
         }
 
@@ -647,7 +662,7 @@ fn process_nested_mcpack_archive<R: Read + Seek>(
             continue;
         };
 
-        if is_mashup {
+        if is_mashup && pack_type == PackType::WorldTemplate {
             pack_type = PackType::MashupPack;
         }
 
@@ -1382,9 +1397,9 @@ pub fn extract_pack_to_destination(
 #[cfg(test)]
 mod tests {
     use super::{
-        clean_pack_name, detect_nested_mcpack_entries, process_nested_mcpack_archive,
-        sanitize_filename_component, suggest_clean_folder_name, validated_archive_path,
-        validated_relative_path, PackType,
+        clean_pack_name, detect_nested_mcpack_entries, is_mashup_name,
+        process_nested_mcpack_archive, sanitize_filename_component, suggest_clean_folder_name,
+        validated_archive_path, validated_relative_path, PackType,
     };
     use std::io::{Cursor, Write};
     use std::path::Path;
@@ -1580,5 +1595,40 @@ mod tests {
             suggest_clean_folder_name("Already Clean (ADDON)", PackType::BehaviorPack),
             "Already Clean (ADDON)"
         );
+    }
+
+    #[test]
+    fn mashup_name_does_not_retype_behavior_or_resource_packs() {
+        assert!(is_mashup_name("Adventure Mashup"));
+        let mut pack_type = PackType::BehaviorPack;
+        if is_mashup_name("Adventure Mashup") && pack_type == PackType::WorldTemplate {
+            pack_type = PackType::MashupPack;
+        }
+        assert_eq!(pack_type, PackType::BehaviorPack);
+
+        let mut wt = PackType::WorldTemplate;
+        if is_mashup_name("Adventure Mashup") && wt == PackType::WorldTemplate {
+            wt = PackType::MashupPack;
+        }
+        assert_eq!(wt, PackType::MashupPack);
+    }
+
+    #[test]
+    fn rejects_backslash_and_drive_letter_archive_paths_on_all_platforms() {
+        for value in [
+            "folder\\file.txt",
+            "..\\outside.txt",
+            "D:/outside.txt",
+            "e:\\evil",
+        ] {
+            assert!(
+                validated_archive_path(value).is_err(),
+                "{value} should be rejected"
+            );
+            assert!(
+                validated_relative_path(value, "output folder name").is_err(),
+                "{value} should be rejected as relative"
+            );
+        }
     }
 }

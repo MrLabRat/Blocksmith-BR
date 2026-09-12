@@ -224,9 +224,7 @@ function App() {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (!target.closest('.pack-type-dropdown')) {
-        document.querySelectorAll('.pack-type-dropdown-menu.open').forEach((menu) => {
-          menu.classList.remove('open');
-        });
+        setPackTypeDropdownOpen(false);
       }
       if (!target.closest('.export-dropdown-wrapper')) {
         setShowExportDropdown(false);

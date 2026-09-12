@@ -138,6 +138,7 @@ export function ScanControls({
       onScanComplete(result);
     } catch (error) {
       console.error('Scan failed:', error);
+      onError?.('Scan Failed', `${error}`);
       onScanComplete([]);
     }
   };
@@ -158,6 +159,7 @@ export function ScanControls({
       onMoveComplete(results);
     } catch (error) {
       console.error('Process failed:', error);
+      onError?.('Process Failed', `${error}`);
       onMoveComplete();
     }
   };
