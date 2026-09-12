@@ -1059,27 +1059,29 @@ fn get_pack_display_name(pack_path: &std::path::Path) -> Option<String> {
 #[tauri::command]
 fn open_skinmaster(app: AppHandle) -> Result<(), String> {
     let temp_dir = std::env::temp_dir().join("Blocksmith-SkinMaster");
-    if temp_dir.exists() {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-    }
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("Failed to create temporary launch directory: {}", e))?;
 
     let skinmaster_path = temp_dir.join("SkinMaster.exe");
-    let mut skinmaster_file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(&skinmaster_path)
-        .map_err(|e| format!("Failed to create SkinMaster executable: {}", e))?;
-    use std::io::Write;
-    skinmaster_file
-        .write_all(SKINMASTER_EXE)
-        .map_err(|e| format!("Failed to extract SkinMaster.exe: {}", e))?;
-    skinmaster_file
-        .sync_all()
-        .map_err(|e| format!("Failed to finalize SkinMaster.exe: {}", e))?;
-    drop(skinmaster_file);
+    let needs_extract = match std::fs::metadata(&skinmaster_path) {
+        Ok(meta) => meta.len() as usize != SKINMASTER_EXE.len(),
+        Err(_) => true,
+    };
+    if needs_extract {
+        let mut skinmaster_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&skinmaster_path)
+            .map_err(|e| format!("Failed to create SkinMaster executable: {}", e))?;
+        use std::io::Write;
+        skinmaster_file
+            .write_all(SKINMASTER_EXE)
+            .map_err(|e| format!("Failed to extract SkinMaster.exe: {}", e))?;
+        skinmaster_file
+            .sync_all()
+            .map_err(|e| format!("Failed to finalize SkinMaster.exe: {}", e))?;
+    }
 
     std::process::Command::new(&skinmaster_path)
         .current_dir(&temp_dir)
@@ -1155,11 +1157,24 @@ fn import_4d_skin_to_premium(
         return Err("premium_pack_path must be a direct premium cache skin pack folder".to_string());
     }
 
-    if !skin_path.exists() {
-        return Err("4D skin pack folder does not exist".to_string());
+    let canonical_skin = skin_path
+        .canonicalize()
+        .map_err(|_| "4D skin pack folder does not exist".to_string())?;
+    if !canonical_skin.is_dir() {
+        return Err("4D skin pack path is not a directory".to_string());
+    }
+    if !is_managed_4d_skin_directory(&canonical_skin, &app)
+        && canonical_skin
+            .parent()
+            .is_none_or(|parent| !is_managed_4d_skin_directory(parent, &app))
+    {
+        return Err(
+            "4D skin pack must be inside the managed 4D Skin Packs directory".to_string(),
+        );
     }
 
     let premium_path = canonical_premium.as_path();
+    let skin_path = canonical_skin.as_path();
 
     let texts_folder = premium_path.join("texts");
     if texts_folder.exists() {
@@ -1173,6 +1188,15 @@ fn import_4d_skin_to_premium(
         let src_path = entry.path();
         let file_name = entry.file_name();
         let dst_path = premium_path.join(&file_name);
+        let metadata = std::fs::symlink_metadata(&src_path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            emit_log(
+                &app,
+                "WARN",
+                &format!("Skipping symlink during 4D import: {:?}", file_name),
+            );
+            continue;
+        }
 
         if file_name == "manifest.json" {
             emit_log(
@@ -1183,7 +1207,7 @@ fn import_4d_skin_to_premium(
             continue;
         }
 
-        if src_path.is_dir() {
+        if metadata.is_dir() {
             if dst_path.exists() {
                 std::fs::remove_dir_all(&dst_path)
                     .map_err(|e| format!("Failed to remove existing folder: {}", e))?;

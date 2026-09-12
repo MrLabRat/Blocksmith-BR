@@ -26,8 +26,11 @@ pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
         let entry = entry.map_err(|e| e.to_string())?;
         let src_entry = entry.path();
         let dst_entry = dst.join(entry.file_name());
-
-        if src_entry.is_dir() {
+        let metadata = fs::symlink_metadata(&src_entry).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
             copy_dir_recursive(&src_entry, &dst_entry)?;
         } else {
             fs::copy(&src_entry, &dst_entry).map_err(|e| e.to_string())?;

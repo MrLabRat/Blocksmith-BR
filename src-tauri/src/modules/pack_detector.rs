@@ -1195,12 +1195,26 @@ fn open_extract_source(
 
     let mut outer = ZipArchive::new(std::io::BufReader::new(file))
         .map_err(|e| format!("Failed to read archive: {}", e))?;
-    let mut bytes = Vec::new();
-    outer
+    let mut entry = outer
         .by_name(entry_name)
-        .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?
+        .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?;
+    if entry.size() > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+        return Err(format!(
+            "Nested pack '{}' exceeds the {} byte size limit",
+            entry_name, MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        ));
+    }
+    let mut bytes = Vec::new();
+    let mut limited = (&mut entry).take(MAX_ARCHIVE_UNCOMPRESSED_BYTES.saturating_add(1));
+    limited
         .read_to_end(&mut bytes)
         .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?;
+    if bytes.len() as u64 > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+        return Err(format!(
+            "Nested pack '{}' exceeded the {} byte size limit while reading",
+            entry_name, MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        ));
+    }
     Ok(Box::new(Cursor::new(bytes)))
 }
 
@@ -1346,14 +1360,17 @@ pub fn extract_pack_to_destination(
 
         const BUFFER_SIZE: usize = 256 * 1024;
         let mut buffer = vec![0u8; BUFFER_SIZE];
+        let mut total_written = 0u64;
 
         for (i, outpath) in files_to_extract {
             let mut zip_file = archive
                 .by_index(i)
                 .map_err(|e| format!("Failed to read entry: {}", e))?;
+            let declared_size = zip_file.size();
             let mut outfile =
                 fs::File::create(&outpath).map_err(|e| format!("Failed to create file: {}", e))?;
             let mut writer = std::io::BufWriter::with_capacity(BUFFER_SIZE, &mut outfile);
+            let mut entry_written = 0u64;
 
             loop {
                 let bytes_read = zip_file
@@ -1361,6 +1378,26 @@ pub fn extract_pack_to_destination(
                     .map_err(|e| format!("Failed to read: {}", e))?;
                 if bytes_read == 0 {
                     break;
+                }
+                entry_written = entry_written
+                    .checked_add(bytes_read as u64)
+                    .ok_or_else(|| "Archive entry size overflow".to_string())?;
+                if entry_written > MAX_ARCHIVE_ENTRY_BYTES
+                    || (declared_size > 0 && entry_written > declared_size)
+                {
+                    return Err(format!(
+                        "Archive entry exceeded size limit while extracting: {}",
+                        outpath.display()
+                    ));
+                }
+                total_written = total_written
+                    .checked_add(bytes_read as u64)
+                    .ok_or_else(|| "Archive size overflow while extracting".to_string())?;
+                if total_written > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+                    return Err(format!(
+                        "Archive expanded past the {} byte limit while extracting",
+                        MAX_ARCHIVE_UNCOMPRESSED_BYTES
+                    ));
                 }
                 writer
                     .write_all(&buffer[..bytes_read])
@@ -1396,8 +1433,14 @@ pub fn extract_pack_to_destination(
     }
 
     if had_existing_destination {
-        fs::remove_dir_all(&backup_path)
-            .map_err(|e| format!("Failed to remove replaced pack backup: {}", e))?;
+        if let Err(error) = fs::remove_dir_all(&backup_path) {
+            eprintln!(
+                "Warning: extracted pack at '{}' but failed to remove backup '{}': {}",
+                output_path.display(),
+                backup_path.display(),
+                error
+            );
+        }
     }
 
     Ok(output_path.to_string_lossy().to_string())
