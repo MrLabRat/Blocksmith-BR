@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to create or update (e.g. v2.0.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build portable Windows exe
+        run: npm run tauri build -- --no-bundle
+
+      - name: Stage release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="$(find src-tauri/target/release -maxdepth 1 -type f -iname '*.exe' ! -iname '*_uninst*' | head -n 1)"
+          if [[ -z "${exe}" ]]; then
+            echo "No release exe found under src-tauri/target/release" >&2
+            ls -la src-tauri/target/release || true
+            exit 1
+          fi
+          cp "${exe}" blocksmith.exe
+          ls -lh blocksmith.exe
+          echo "ASSET_PATH=blocksmith.exe" >> "$GITHUB_ENV"
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Blocksmith ${{ steps.tag.outputs.name }}
+          body_path: RELEASE.md
+          files: blocksmith.exe
+          draft: false
+          prerelease: false
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
