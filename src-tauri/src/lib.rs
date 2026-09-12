@@ -2810,8 +2810,53 @@ fn list_recycled_packs() -> Result<Vec<RecycledPackInfo>, String> {
     Ok(results)
 }
 
+fn is_allowed_restore_parent(parent: &std::path::Path, app: &AppHandle) -> bool {
+    let state = app.state::<AppState>();
+    let settings = state.settings.read();
+    let configured: Vec<&String> = [
+        settings.behavior_pack_path.as_ref(),
+        settings.resource_pack_path.as_ref(),
+        settings.skin_pack_path.as_ref(),
+        settings.skin_pack_4d_path.as_ref(),
+        settings.world_template_path.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for dir in configured {
+        let base = std::path::Path::new(dir);
+        if parent == base {
+            return true;
+        }
+        if let (Ok(canonical_parent), Ok(canonical_base)) =
+            (parent.canonicalize(), base.canonicalize())
+        {
+            if canonical_parent == canonical_base {
+                return true;
+            }
+        }
+    }
+
+    if let Some(scan_location) = settings.scan_location.as_ref() {
+        let four_d = std::path::Path::new(scan_location).join("4D Skin Packs");
+        if parent == four_d.as_path() {
+            return true;
+        }
+        if let (Ok(canonical_parent), Ok(canonical_four_d)) =
+            (parent.canonicalize(), four_d.canonicalize())
+        {
+            if canonical_parent == canonical_four_d {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 #[tauri::command]
-fn restore_recycled_pack(recycle_path: String) -> Result<String, String> {
+fn restore_recycled_pack(recycle_path: String, app: AppHandle) -> Result<String, String> {
     let (root, canonical_path) = validate_recycle_entry(&recycle_path)?;
     let name = canonical_path
         .file_name()
@@ -2827,11 +2872,15 @@ fn restore_recycled_pack(recycle_path: String) -> Result<String, String> {
         .and_then(|s| s.as_str())
         .ok_or("Missing original path in recycle bin metadata")?;
     let original_path = std::path::Path::new(original_path_str);
+    let parent = original_path.parent().ok_or("Invalid original path")?;
+
+    if !is_allowed_restore_parent(parent, &app) {
+        return Err("Restore destination is outside configured pack directories".to_string());
+    }
 
     if original_path.exists() {
         return Err("A pack already exists at the original location".to_string());
     }
-    let parent = original_path.parent().ok_or("Invalid original path")?;
     std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
 
     if std::fs::rename(&canonical_path, original_path).is_err() {
