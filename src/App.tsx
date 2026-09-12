@@ -67,7 +67,7 @@ const tipMessages = [
   "The orange 'Update' badge means Blocksmith found the same pack installed but with a different version.",
 ];
 
-const packTypes: (PackType | 'All')[] = ['All', 'BehaviorPack', 'ResourcePack', 'SkinPack', 'SkinPack4D', 'WorldTemplate'];
+const packTypes: (PackType | 'All')[] = ['All', 'BehaviorPack', 'ResourcePack', 'SkinPack', 'SkinPack4D', 'WorldTemplate', 'MashupPack'];
 const packTypeLabels: Record<string, string> = {
   'All': 'All Packs',
   'BehaviorPack': 'Behavior Packs',
@@ -75,6 +75,7 @@ const packTypeLabels: Record<string, string> = {
   'SkinPack': 'Skin Packs',
   'SkinPack4D': 'Skin Packs (4D)',
   'WorldTemplate': 'World Templates',
+  'MashupPack': 'Mash-Ups',
 };
 
 const MAX_LOG_ENTRIES = 500;
@@ -134,9 +135,12 @@ function App() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [newPackPaths, setNewPackPaths] = useState<Set<string>>(new Set());
   const packsRef = useRef<PackInfo[]>([]);
+  const isScanningRef = useRef(false);
+  const isMovingRef = useRef(false);
+  const scanGenerationRef = useRef(0);
   const newFilesDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoScanInFlightRef = useRef(false);
-  const newPackNamesRef = useRef<Map<string, string>>(new Map()); // path → display name, accumulated
+  const newPackNamesRef = useRef<Map<string, string>>(new Map());
   const newPacksNotifIdRef = useRef<string | null>(null);
 
   const addNotification = useCallback((type: AppNotification['type'], title: string, message: string) => {
@@ -408,43 +412,64 @@ function App() {
   // Scan/Move handlers
   const handleScanStart = useCallback(() => {
     setIsScanning(true);
+    isScanningRef.current = true;
     setProgress(null);
   }, []);
 
-  const handleScanComplete = useCallback((newPacks: PackInfo[]) => {
+  const handleScanComplete = useCallback((newPacks: PackInfo[] | false, scannedDirectory?: string) => {
+    const generation = ++scanGenerationRef.current;
+    setProgress(null);
+    setIsScanning(false);
+    isScanningRef.current = false;
+    if (scannedDirectory) {
+      setSettings((prev) => {
+        if (prev.scan_location === scannedDirectory) return prev;
+        return { ...prev, scan_location: scannedDirectory };
+      });
+    }
+    if (newPacks === false) {
+      return;
+    }
     setPacks(newPacks);
     setSelectedPacks(new Set());
     setNewPackPaths(new Set());
     newPackNamesRef.current.clear();
     newPacksNotifIdRef.current = null;
-    setProgress(null);
-    setIsScanning(false);
     if (newPacks.length > 0) {
       invoke<PackInfo[]>('compute_pack_status', { packs: newPacks })
-        .then((updated) => setPacks(updated))
+        .then((updated) => {
+          if (scanGenerationRef.current !== generation) return;
+          const updatedMap = new Map(updated.map((p) => [getPackKey(p), p]));
+          setPacks((prev) => prev.map((p) => updatedMap.get(getPackKey(p)) ?? p));
+        })
         .catch((error) => console.error('Status check failed:', error));
     }
   }, []);
 
   const handleMoveStart = useCallback(() => {
     setIsMoving(true);
+    isMovingRef.current = true;
     setProgress(null);
     setResults(null);
   }, []);
 
   const handleMoveComplete = useCallback((ops?: MoveOperation[]) => {
     setIsMoving(false);
+    isMovingRef.current = false;
     setProgress(null);
     if (ops) {
       setResults(ops);
       const fourDSkinPacks = ops.filter((r) => r.pack_type === 'SkinPack4D' && r.success);
       if (fourDSkinPacks.length > 0) {
-        const path = fourDSkinPacks[0].destination.replace(/ \(4D SKIN\)$/, '');
+        const path = fourDSkinPacks[0].skin_pack_4d_path || fourDSkinPacks[0].destination;
         navigator.clipboard.writeText(path).catch(() => {});
       }
       if (ops.some((r) => r.success) && packsRef.current.length > 0) {
         invoke<PackInfo[]>('compute_pack_status', { packs: packsRef.current })
-          .then((updated) => setPacks(updated))
+          .then((updated) => {
+            const updatedMap = new Map(updated.map((p) => [getPackKey(p), p]));
+            setPacks((prev) => prev.map((p) => updatedMap.get(getPackKey(p)) ?? p));
+          })
           .catch((error) => console.error('Status refresh failed:', error));
       }
     }
@@ -648,12 +673,13 @@ function App() {
     const scanLocation = settings.scan_location;
 
     const processNewFiles = async () => {
-      if (autoScanInFlightRef.current) return;
+      if (autoScanInFlightRef.current || isScanningRef.current || isMovingRef.current) return;
       autoScanInFlightRef.current = true;
       newFilesDebounceRef.current = null;
       const knownPaths = new Set(packsRef.current.map(p => p.path));
       try {
         const allPacks = await invoke<PackInfo[]>('scan_packs', { directory: scanLocation });
+        if (isScanningRef.current || isMovingRef.current) return;
         const newPacks = allPacks.filter(p => !knownPaths.has(p.path));
         if (newPacks.length === 0) return;
 
@@ -667,7 +693,6 @@ function App() {
           return next;
         });
 
-        // Accumulate names across multiple detections
         const uniqueNewFiles = [...new Set(newPacks.map(p => p.path))];
         uniqueNewFiles.forEach(fp => {
           if (!newPackNamesRef.current.has(fp)) {
@@ -676,7 +701,6 @@ function App() {
           }
         });
 
-        // Replace the single running notification with the full accumulated list
         const allNames = [...newPackNamesRef.current.values()];
         const shown = allNames.slice(0, 5);
         const overflow = allNames.length - shown.length;
@@ -693,8 +717,8 @@ function App() {
         newPacksNotifIdRef.current = notif.id;
         invoke<PackInfo[]>('compute_pack_status', { packs: newPacks })
           .then(updated => {
-            const updatedMap = new Map(updated.map(p => [p.path, p]));
-            setPacks(prev => prev.map(p => updatedMap.get(p.path) ?? p));
+            const updatedMap = new Map(updated.map(p => [getPackKey(p), p]));
+            setPacks(prev => prev.map(p => updatedMap.get(getPackKey(p)) ?? p));
           })
           .catch(() => {});
       } catch {
@@ -704,14 +728,13 @@ function App() {
     };
 
     const interval = setInterval(async () => {
-      if (autoScanInFlightRef.current) return;
+      if (autoScanInFlightRef.current || isScanningRef.current || isMovingRef.current) return;
       try {
         const files = await invoke<string[]>('list_mc_files_in_dir', { directory: scanLocation });
         const knownPaths = new Set(packsRef.current.map(p => p.path));
         const newFiles = files.filter(f => !knownPaths.has(f));
         if (newFiles.length === 0) return;
 
-        // Reset debounce each time new files appear, so we wait for the full batch to arrive
         if (newFilesDebounceRef.current) clearTimeout(newFilesDebounceRef.current);
         newFilesDebounceRef.current = setTimeout(processNewFiles, 3000);
       } catch { }
@@ -1035,7 +1058,8 @@ function App() {
         settings={settings} 
         onSettingsChange={handleSettingsChange} 
         isOpen={showSettings} 
-        onClose={() => setShowSettings(false)} 
+        onClose={() => setShowSettings(false)}
+        onError={(title, message) => addNotification('error', title, message)}
       />
       </div>
 

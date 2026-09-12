@@ -402,26 +402,30 @@ async fn compute_pack_status(
                     }
                     (None, None) => {
                         pack.is_installed = Some(true);
-                        let old_size =
-                            size_cache.entry(installed.path.clone()).or_insert_with(|| {
-                                let path = std::path::Path::new(&installed.path);
-                                calculate_folder_size(path)
-                            });
-                        if let Some(new_size) = pack.folder_size {
-                            if *old_size == 0 {
-                                if new_size > 0 {
-                                    pack.is_update = Some(true);
-                                }
-                            } else {
-                                let size_diff = if new_size > *old_size {
-                                    new_size as f64 / *old_size as f64
-                                } else if new_size == 0 {
-                                    f64::INFINITY
+                        // Archive scans store compressed file size in folder_size, while
+                        // installed packs use on-disk tree size — never compare those units.
+                        if pack.extracted {
+                            let old_size =
+                                size_cache.entry(installed.path.clone()).or_insert_with(|| {
+                                    let path = std::path::Path::new(&installed.path);
+                                    calculate_folder_size(path)
+                                });
+                            if let Some(new_size) = pack.folder_size {
+                                if *old_size == 0 {
+                                    if new_size > 0 {
+                                        pack.is_update = Some(true);
+                                    }
                                 } else {
-                                    *old_size as f64 / new_size as f64
-                                };
-                                if size_diff > 1.1 {
-                                    pack.is_update = Some(true);
+                                    let size_diff = if new_size > *old_size {
+                                        new_size as f64 / *old_size as f64
+                                    } else if new_size == 0 {
+                                        f64::INFINITY
+                                    } else {
+                                        *old_size as f64 / new_size as f64
+                                    };
+                                    if size_diff > 1.1 {
+                                        pack.is_update = Some(true);
+                                    }
                                 }
                             }
                         }
@@ -877,7 +881,8 @@ fn is_managed_4d_skin_directory(path: &std::path::Path, app: &AppHandle) -> bool
     let Ok(canonical_scan_location) = std::path::Path::new(scan_location).canonicalize() else {
         return false;
     };
-    canonical_path == canonical_scan_location.join("4D Skin Packs")
+    let four_d_root = canonical_scan_location.join("4D Skin Packs");
+    canonical_path == four_d_root || canonical_path.starts_with(&four_d_root)
 }
 
 #[tauri::command]
@@ -1338,12 +1343,20 @@ fn watch_scan_folder(path: String, app: AppHandle) -> Result<(), String> {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("Failed to create scan folder watcher: {}", e);
+                app_clone
+                    .state::<AppState>()
+                    .scan_watching
+                    .store(false, Ordering::SeqCst);
                 return;
             }
         };
 
         if let Err(e) = watcher.watch(&scan_path, RecursiveMode::NonRecursive) {
             eprintln!("Failed to watch scan folder: {}", e);
+            app_clone
+                .state::<AppState>()
+                .scan_watching
+                .store(false, Ordering::SeqCst);
             return;
         }
 
@@ -1515,8 +1528,11 @@ fn watch_premium_cache(app: AppHandle) -> Result<(), String> {
     *app.state::<AppState>().watch_stop_tx.lock() = Some(stop_tx);
 
     let app_clone = app.clone();
+    let app_for_log = app.clone();
 
     std::thread::spawn(move || {
+        let app_for_events = app_clone.clone();
+        let app_for_reset = app_clone;
         let mut watcher: notify::RecommendedWatcher = match Watcher::new(
             move |res: Result<Event, notify::Error>| {
                 if let Ok(event) = res {
@@ -1551,7 +1567,7 @@ fn watch_premium_cache(app: AppHandle) -> Result<(), String> {
                             details,
                         };
 
-                        let _ = app_clone.emit("watcher-event", watcher_event);
+                        let _ = app_for_events.emit("watcher-event", watcher_event);
                     }
                 }
             },
@@ -1560,17 +1576,25 @@ fn watch_premium_cache(app: AppHandle) -> Result<(), String> {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("Failed to create watcher: {}", e);
+                app_for_reset
+                    .state::<AppState>()
+                    .watching
+                    .store(false, Ordering::SeqCst);
                 return;
             }
         };
 
         if let Err(e) = watcher.watch(&premium_cache, RecursiveMode::Recursive) {
             eprintln!("Failed to watch: {}", e);
+            app_for_reset
+                .state::<AppState>()
+                .watching
+                .store(false, Ordering::SeqCst);
             return;
         }
 
         emit_log(
-            &app,
+            &app_for_log,
             "INFO",
             &format!("Watching: {}", premium_cache.display()),
         );

@@ -100,7 +100,7 @@ export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShow
             </div>
             <div className="modal-content">
               <p style={{ marginBottom: '16px' }}>
-                This will delete ALL packs from all folders. This action cannot be undone.
+                This will move ALL packs from configured folders into the Recycle Bin. You can restore them later from Recycle Bin.
               </p>
               <p style={{ color: 'var(--error-color)', fontWeight: '500' }}>
                 Are you absolutely sure?

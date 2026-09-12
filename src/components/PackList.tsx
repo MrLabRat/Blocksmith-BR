@@ -27,6 +27,7 @@ interface ContextMenuState {
 
 interface PackGroup {
   mainPack: PackInfo;
+  behaviorPacks: PackInfo[];
   resourcePacks: PackInfo[];
   skinPacks: PackInfo[];
   worldTemplates: PackInfo[];
@@ -157,24 +158,20 @@ export function PackList({
       const behaviorPacks = groupPacks.filter(p => p.pack_type === 'BehaviorPack');
       const resourcePacks = groupPacks.filter(p => p.pack_type === 'ResourcePack');
       const skinPacks = groupPacks.filter(p => p.pack_type === 'SkinPack' || p.pack_type === 'SkinPack4D');
-      // MashupPack is a world template that was flagged as part of a mash-up set (by filename
-      // or correlation) — it must still be treated as a world template for grouping, otherwise
-      // it silently disappears from every bucket below.
       const worldTemplates = groupPacks.filter(p => p.pack_type === 'WorldTemplate' || p.pack_type === 'MashupPack');
+      const unknownPacks = groupPacks.filter(p => p.pack_type === 'Unknown');
       
-      // Determine if this is a mash-up pack (has multiple pack types)
       const hasMultipleTypes = [behaviorPacks.length > 0, resourcePacks.length > 0, skinPacks.length > 0, worldTemplates.length > 0].filter(Boolean).length > 1;
       
-      // Determine main pack - prefer behavior pack, then world template, then resource pack
-      let mainPack: PackInfo | null = behaviorPacks[0] || worldTemplates[0] || resourcePacks[0] || skinPacks[0];
+      let mainPack: PackInfo | null = behaviorPacks[0] || worldTemplates[0] || resourcePacks[0] || skinPacks[0] || unknownPacks[0];
       
       if (mainPack) {
         const mainKey = getPackKey(mainPack);
         if (!processedKeys.has(mainKey)) {
           processedKeys.add(mainKey);
           
-          // Collect all other packs as children
-          const allPacks = [...behaviorPacks, ...resourcePacks, ...skinPacks, ...worldTemplates];
+          const allPacks = [...behaviorPacks, ...resourcePacks, ...skinPacks, ...worldTemplates, ...unknownPacks];
+          const childBPs: PackInfo[] = [];
           const childRPs: PackInfo[] = [];
           const childSPs: PackInfo[] = [];
           const childWTs: PackInfo[] = [];
@@ -183,14 +180,17 @@ export function PackList({
             const key = getPackKey(p);
             if (!processedKeys.has(key) && p !== mainPack) {
               processedKeys.add(key);
-              if (p.pack_type === 'ResourcePack') childRPs.push(p);
+              if (p.pack_type === 'BehaviorPack') childBPs.push(p);
+              else if (p.pack_type === 'ResourcePack') childRPs.push(p);
               else if (p.pack_type === 'SkinPack' || p.pack_type === 'SkinPack4D') childSPs.push(p);
               else if (p.pack_type === 'WorldTemplate' || p.pack_type === 'MashupPack') childWTs.push(p);
+              else childRPs.push(p);
             }
           }
           
           groups.push({
             mainPack,
+            behaviorPacks: mainPack.pack_type === 'BehaviorPack' ? [] : childBPs,
             resourcePacks: mainPack.pack_type === 'ResourcePack' ? [] : childRPs,
             skinPacks: mainPack.pack_type === 'SkinPack' || mainPack.pack_type === 'SkinPack4D' ? [] : childSPs,
             worldTemplates: mainPack.pack_type === 'WorldTemplate' || mainPack.pack_type === 'MashupPack' ? [] : childWTs,
@@ -220,6 +220,7 @@ export function PackList({
   const handleGroupToggle = useCallback((group: PackGroup) => {
     const allKeys = [
       getPackKey(group.mainPack),
+      ...group.behaviorPacks.map(getPackKey),
       ...group.resourcePacks.map(getPackKey),
       ...group.skinPacks.map(getPackKey),
       ...group.worldTemplates.map(getPackKey),
@@ -338,10 +339,11 @@ export function PackList({
         {groupedPacks.map((group) => {
           const mainKey = getPackKey(group.mainPack);
           const isExpanded = expandedGroups.has(mainKey);
-          const hasChildren = group.resourcePacks.length > 0 || group.skinPacks.length > 0 || group.worldTemplates.length > 0;
+          const hasChildren = group.behaviorPacks.length > 0 || group.resourcePacks.length > 0 || group.skinPacks.length > 0 || group.worldTemplates.length > 0;
           
           const allKeys = [
             mainKey,
+            ...group.behaviorPacks.map(getPackKey),
             ...group.resourcePacks.map(getPackKey),
             ...group.skinPacks.map(getPackKey),
             ...group.worldTemplates.map(getPackKey),
@@ -395,7 +397,7 @@ export function PackList({
                     </span>
                     {hasChildren && (
                       <span className="pack-group-count">
-                        +{group.resourcePacks.length + group.skinPacks.length + group.worldTemplates.length} parts
+                        +{group.behaviorPacks.length + group.resourcePacks.length + group.skinPacks.length + group.worldTemplates.length} parts
                       </span>
                     )}
                     {group.mainPack.uuid && <span className="pack-uuid">UUID: {group.mainPack.uuid.slice(0, 8)}...</span>}
@@ -426,6 +428,43 @@ export function PackList({
               
               {isExpanded && hasChildren && (
                 <div className="pack-group-children">
+                  {group.behaviorPacks.map((bp) => {
+                    const bpKey = getPackKey(bp);
+                    return (
+                      <div
+                        key={bpKey}
+                        className={`pack-item child-pack ${selectedPacks.has(bpKey) ? 'selected' : ''}`}
+                        onClick={() => onTogglePack(bpKey)}
+                        onContextMenu={(e) => handleContextMenu(e, bp)}
+                      >
+                        <CustomCheckbox 
+                          checked={selectedPacks.has(bpKey)}
+                          onChange={() => onTogglePack(bpKey)}
+                        />
+                        <PackIcon pack={bp} />
+                        <div className="pack-info">
+                          <div className="pack-name">{getBestDisplayName(bp)}</div>
+                          <div className="pack-details">
+                            <span className="pack-type" style={{ color: PackTypeColors['BehaviorPack'] }}>
+                              {PackTypeLabels['BehaviorPack']}
+                            </span>
+                          </div>
+                          <div className="pack-path">
+                            <Folder size={12} />
+                            {bp.path}
+                            {bp.subfolder && <span className="pack-subfolder"> / {bp.subfolder}</span>}
+                          </div>
+                        </div>
+                        <button
+                          className="btn btn-icon btn-danger"
+                          onClick={(e) => handleTrashClick(e, bp, bpKey)}
+                          data-tooltip={trashTooltip}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    );
+                  })}
                   {group.resourcePacks.map((rp) => {
                     const rpKey = getPackKey(rp);
                     return (
