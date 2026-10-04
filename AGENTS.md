@@ -150,3 +150,10 @@ When scanning packs, the app compares against installed packs by:
 9. Renamed icon settings: "Black & Red" → "Default", "Default" → "Minecraft"
 10. Fixed 4D skin pack detection - now searches for skins.json in subfolders
 11. 4D skin pack extraction strips subfolder prefix so contents are at root
+
+## Cursor Cloud specific instructions
+
+- Vite is fixed to port **29999** (`strictPort` in `vite.config.ts`). `npm run dev` and `npm run tauri dev` both use that port. `npm run tauri dev` starts Vite through `beforeDevCommand`. Stop anything already listening on 29999 before launching Tauri, or Vite exits.
+- The default image Rust 1.83 cannot compile this crate graph. Dependencies require Cargo edition 2024 (Rust 1.85+). The environment install selects rustup stable. Backend check: `cargo test --manifest-path src-tauri/Cargo.toml --locked`.
+- Linux Tauri needs WebKitGTK 4.1 (`libwebkit2gtk-4.1-dev` and the other packages from the environment install). The shipped bundle target is Windows NSIS. SkinMaster launch uses `cmd /C start` and only works on Windows.
+- Frontend check: `npm run build` (`tsc && vite build`). There is no separate lint script.
