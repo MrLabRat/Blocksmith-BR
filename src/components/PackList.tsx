@@ -82,6 +82,33 @@ function InstallStatusBadge({ pack }: { pack: PackInfo }) {
   return null;
 }
 
+function AttentionBadge({ pack }: { pack: PackInfo }) {
+  if (!pack.needs_attention) return null;
+  return (
+    <span
+      className="pack-status-badge attention"
+      title={pack.attention_message || 'This pack needs attention'}
+    >
+      Attention
+    </span>
+  );
+}
+
+function PackVersionLabel({ pack }: { pack: PackInfo }) {
+  if (!pack.version && !pack.installed_version) return null;
+  if (pack.is_update && pack.installed_version) {
+    return (
+      <span className="pack-version" title="Installed → scanned version">
+        v{pack.installed_version} → v{pack.version || '?'}
+      </span>
+    );
+  }
+  if (pack.version) {
+    return <span className="pack-version">v{pack.version}</span>;
+  }
+  return null;
+}
+
 
 
 function CustomCheckbox({ checked, indeterminate, onChange }: { checked: boolean; indeterminate?: boolean; onChange: () => void }) {
@@ -376,6 +403,7 @@ export function PackList({
                   <div className="pack-name">
                     {group.displayName}
                     <InstallStatusBadge pack={group.mainPack} />
+                    <AttentionBadge pack={group.mainPack} />
                     {newPackPaths?.has(group.mainPack.path) && (
                       <span className="pack-status-badge new-pack">New</span>
                     )}
@@ -395,6 +423,7 @@ export function PackList({
                     <span className="pack-type" style={{ color: PackTypeColors[group.mainPack.pack_type] }}>
                       {PackTypeLabels[group.mainPack.pack_type]}
                     </span>
+                    <PackVersionLabel pack={group.mainPack} />
                     {hasChildren && (
                       <span className="pack-group-count">
                         +{group.behaviorPacks.length + group.resourcePacks.length + group.skinPacks.length + group.worldTemplates.length} parts
@@ -443,11 +472,16 @@ export function PackList({
                         />
                         <PackIcon pack={bp} />
                         <div className="pack-info">
-                          <div className="pack-name">{getBestDisplayName(bp)}</div>
+                          <div className="pack-name">
+                            {getBestDisplayName(bp)}
+                            <InstallStatusBadge pack={bp} />
+                            <AttentionBadge pack={bp} />
+                          </div>
                           <div className="pack-details">
                             <span className="pack-type" style={{ color: PackTypeColors['BehaviorPack'] }}>
                               {PackTypeLabels['BehaviorPack']}
                             </span>
+                            <PackVersionLabel pack={bp} />
                           </div>
                           <div className="pack-path">
                             <Folder size={12} />
@@ -480,11 +514,16 @@ export function PackList({
                         />
                         <PackIcon pack={rp} />
                         <div className="pack-info">
-                          <div className="pack-name">{getBestDisplayName(rp)}</div>
+                          <div className="pack-name">
+                            {getBestDisplayName(rp)}
+                            <InstallStatusBadge pack={rp} />
+                            <AttentionBadge pack={rp} />
+                          </div>
                           <div className="pack-details">
                             <span className="pack-type" style={{ color: PackTypeColors['ResourcePack'] }}>
                               Resource Pack
                             </span>
+                            <PackVersionLabel pack={rp} />
                           </div>
                           <div className="pack-path">
                             <Folder size={12} />
@@ -517,11 +556,16 @@ export function PackList({
                         />
                         <PackIcon pack={sp} fallbackIconBase64={sharedIcon} />
                         <div className="pack-info">
-                          <div className="pack-name">{getBestDisplayName(sp)}</div>
+                          <div className="pack-name">
+                            {getBestDisplayName(sp)}
+                            <InstallStatusBadge pack={sp} />
+                            <AttentionBadge pack={sp} />
+                          </div>
                           <div className="pack-details">
                             <span className="pack-type" style={{ color: PackTypeColors[sp.pack_type] }}>
                               {PackTypeLabels[sp.pack_type]}
                             </span>
+                            <PackVersionLabel pack={sp} />
                           </div>
                           <div className="pack-path">
                             <Folder size={12} />
@@ -554,11 +598,16 @@ export function PackList({
                         />
                         <PackIcon pack={wt} />
                         <div className="pack-info">
-                          <div className="pack-name">{getBestDisplayName(wt)}</div>
+                          <div className="pack-name">
+                            {getBestDisplayName(wt)}
+                            <InstallStatusBadge pack={wt} />
+                            <AttentionBadge pack={wt} />
+                          </div>
                           <div className="pack-details">
                             <span className="pack-type" style={{ color: PackTypeColors[wt.pack_type] }}>
                               {PackTypeLabels[wt.pack_type]}
                             </span>
+                            <PackVersionLabel pack={wt} />
                           </div>
                           <div className="pack-path">
                             <Folder size={12} />

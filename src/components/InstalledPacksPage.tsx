@@ -40,6 +40,7 @@ const packTypeLabels: Record<string, string> = {
   'BehaviorPack': 'Addons',
   'ResourcePack': 'Resource Packs',
   'SkinPack': 'Skin Packs',
+  'SkinPack4D': 'Skin Packs (4D)',
   'WorldTemplate': 'World Templates',
   'MashupPack': 'Mash-Ups',
 };
@@ -105,6 +106,8 @@ const PackGridCard = memo(function PackGridCard({
   onDelete,
   isExpanded,
   onToggleExpand,
+  selected,
+  onToggleSelect,
 }: {
   group: PackGroup;
   packSizes: Record<string, { size: number; formatted: string }>;
@@ -112,6 +115,8 @@ const PackGridCard = memo(function PackGridCard({
   onDelete: (pack: PackInfo) => void;
   isExpanded: boolean;
   onToggleExpand: () => void;
+  selected: boolean;
+  onToggleSelect: (path: string) => void;
 }) {
   const IconComponent = getIconForPackType(group.mainPack.pack_type);
   const color = PackTypeColors[group.mainPack.pack_type];
@@ -126,7 +131,7 @@ const PackGridCard = memo(function PackGridCard({
 
   return (
     <div
-      className={`pack-grid-card${isExpanded ? ' grid-expanded' : ''}`}
+      className={`pack-grid-card${isExpanded ? ' grid-expanded' : ''}${selected ? ' selected' : ''}`}
       onContextMenu={(e) => onContextMenu(e, group.mainPack)}
       onClick={() => hasChildren && onToggleExpand()}
       style={hasChildren ? { cursor: 'pointer' } : undefined}
@@ -139,6 +144,17 @@ const PackGridCard = memo(function PackGridCard({
               <IconComponent style={{ color, width: '40%', height: '40%' }} />
             </div>
         }
+        <label
+          className="pack-grid-select"
+          onClick={(e) => e.stopPropagation()}
+          title="Select pack"
+        >
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(group.mainPack.path)}
+          />
+        </label>
         {hasChildren && (
           <span className="pack-grid-badge">+{childPacks.length}</span>
         )}
@@ -185,8 +201,10 @@ interface VirtualListRowProps {
   virtualRows: VirtualRow[];
   packSizes: Record<string, { size: number; formatted: string }>;
   expandedGroups: Set<string>;
+  selectedPacks: Set<string>;
   skinFallbackIcons: Record<string, string | null>;
   onToggle: (path: string) => void;
+  onToggleSelect: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, pack: PackInfo) => void;
   onDelete: (pack: PackInfo) => void;
   getBestDisplayName: (pack: PackInfo) => string;
@@ -198,8 +216,10 @@ function VirtualListRow({
   virtualRows,
   packSizes,
   expandedGroups,
+  selectedPacks,
   skinFallbackIcons,
   onToggle,
+  onToggleSelect,
   onContextMenu,
   onDelete,
   getBestDisplayName,
@@ -211,14 +231,23 @@ function VirtualListRow({
     const { pack, childKind } = row;
     const isSkinPack = childKind === 'SkinPack';
     const icon = pack.icon_base64 ?? (isSkinPack ? skinFallbackIcons[pack.path] ?? null : null);
+    const selected = selectedPacks.has(pack.path);
     return (
       <div style={wrapperStyle}>
         <div
-          className="installed-pack-card child-pack"
+          className={`installed-pack-card child-pack${selected ? ' selected' : ''}`}
           style={{ height: '100%' }}
           onContextMenu={(e) => onContextMenu(e, pack)}
         >
           {icon && <div className="pack-row-bg" style={{ backgroundImage: `url(${icon})` }} />}
+          <input
+            type="checkbox"
+            className="installed-pack-checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(pack.path)}
+            onClick={(e) => e.stopPropagation()}
+            title="Select pack"
+          />
           <InstalledPackIcon pack={pack} overrideIcon={icon} />
           <div className="pack-card-content">
             <div className="pack-card-name">{getBestDisplayName(pack)}</div>
@@ -246,16 +275,25 @@ function VirtualListRow({
   const { group, hasChildren } = row;
   const isExpanded = expandedGroups.has(group.mainPack.path);
   const groupIcon = getBestGroupIcon(group);
+  const selected = selectedPacks.has(group.mainPack.path);
 
   return (
     <div style={wrapperStyle}>
       <div
-        className={`installed-pack-card ${hasChildren ? 'has-children' : ''}`}
+        className={`installed-pack-card ${hasChildren ? 'has-children' : ''}${selected ? ' selected' : ''}`}
         style={{ height: '100%' }}
         onClick={() => hasChildren && onToggle(group.mainPack.path)}
         onContextMenu={(e) => onContextMenu(e, group.mainPack)}
       >
         {groupIcon && <div className="pack-row-bg" style={{ backgroundImage: `url(${groupIcon})` }} />}
+        <input
+          type="checkbox"
+          className="installed-pack-checkbox"
+          checked={selected}
+          onChange={() => onToggleSelect(group.mainPack.path)}
+          onClick={(e) => e.stopPropagation()}
+          title="Select pack"
+        />
         <InstalledPackIcon pack={group.mainPack} overrideIcon={groupIcon} />
         <div className="pack-card-content">
           <div className="pack-card-name">
@@ -425,6 +463,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
   const [marketplaceStatus, setMarketplaceStatus] = useState<'idle' | 'loading' | 'done' | 'unavailable'>('idle');
   const [expandedGridCard, setExpandedGridCard] = useState<string | null>(null);
   const [duplicates, setDuplicates] = useState<DuplicateGroup[] | null>(null);
+  const [pendingDuplicateDelete, setPendingDuplicateDelete] = useState<string | null>(null);
   const [isDuplicateLoading, setIsDuplicateLoading] = useState(false);
   const [renameSuggestions, setRenameSuggestions] = useState<RenameSuggestion[] | null>(null);
   const [isRenameScanning, setIsRenameScanning] = useState(false);
@@ -847,6 +886,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
       BehaviorPack: 0,
       ResourcePack: 0,
       SkinPack: 0,
+      SkinPack4D: 0,
       WorldTemplate: 0,
       MashupPack: 0,
     };
@@ -867,6 +907,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
       BehaviorPack: 0,
       ResourcePack: 0,
       SkinPack: 0,
+      SkinPack4D: 0,
       WorldTemplate: 0,
       MashupPack: 0,
     };
@@ -976,7 +1017,31 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
     }
   };
 
+  const handleToggleSelect = useCallback((path: string) => {
+    setSelectedPacks((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
+
+  const handleSelectAllVisible = useCallback(() => {
+    setSelectedPacks(new Set(filteredGroupedPacks.map((g) => g.mainPack.path)));
+  }, [filteredGroupedPacks]);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedPacks(new Set());
+  }, []);
+
   const handleRemoveDuplicate = async (path: string) => {
+    setPendingDuplicateDelete(path);
+  };
+
+  const confirmRemoveDuplicate = async () => {
+    const path = pendingDuplicateDelete;
+    if (!path) return;
+    setPendingDuplicateDelete(null);
     try {
       await invoke('delete_pack', { path });
       setPacks(prev => prev.filter(p => p.path !== path));
@@ -1115,7 +1180,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
             <>
               {/* Filter tabs */}
               <div className="packs-filter-tabs">
-                {['All', 'BehaviorPack', 'ResourcePack', 'SkinPack', 'WorldTemplate', 'MashupPack'].map((type) => (
+                {['All', 'BehaviorPack', 'ResourcePack', 'SkinPack', 'SkinPack4D', 'WorldTemplate', 'MashupPack'].map((type) => (
                   <button
                     key={type}
                     className={`filter-tab ${selectedType === type ? 'active' : ''}`}
@@ -1194,6 +1259,21 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
 
                {/* Action buttons */}
                <div className="pack-actions">
+                 <button
+                   className="btn btn-secondary btn-sm"
+                   onClick={handleSelectAllVisible}
+                   disabled={filteredGroupedPacks.length === 0}
+                 >
+                   Select All
+                 </button>
+                 {selectedPacks.size > 0 && (
+                   <button
+                     className="btn btn-secondary btn-sm"
+                     onClick={handleClearSelection}
+                   >
+                     Clear ({selectedPacks.size})
+                   </button>
+                 )}
                  {selectedPacks.size > 0 && (
                    <button 
                      className="btn btn-danger btn-sm"
@@ -1271,6 +1351,8 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                              onDelete={handleDeletePack}
                              isExpanded={isExpanded}
                              onToggleExpand={() => setExpandedGridCard(isExpanded ? null : group.mainPack.path)}
+                             selected={selectedPacks.has(group.mainPack.path)}
+                             onToggleSelect={handleToggleSelect}
                            />
                          );
                        })}
@@ -1333,8 +1415,10 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                               virtualRows,
                               packSizes,
                               expandedGroups,
+                              selectedPacks,
                               skinFallbackIcons,
                               onToggle: toggleGroup,
+                              onToggleSelect: handleToggleSelect,
                               onContextMenu: handleContextMenu,
                               onDelete: handleDeletePack,
                               getBestDisplayName,
@@ -1477,7 +1561,7 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
                          </div>
                          <button
                            className="btn btn-danger btn-sm"
-                           onClick={() => handleRemoveDuplicate(pack.path)}
+                           onClick={() => void handleRemoveDuplicate(pack.path)}
                            title={`Delete: ${pack.path}`}
                          >
                            <Trash2 size={12} style={{ marginRight: 4 }} />
@@ -1492,6 +1576,26 @@ export function InstalledPacksPage({ onClose, addNotification }: InstalledPacksP
            </div>
            <div className="modal-actions">
              <button className="btn btn-primary" onClick={() => setDuplicates(null)}>Close</button>
+           </div>
+         </div>
+       </div>
+     )}
+
+     {pendingDuplicateDelete && (
+       <div className="modal-overlay" onClick={() => setPendingDuplicateDelete(null)}>
+         <div className="modal modal-small" onClick={(e) => e.stopPropagation()}>
+           <div className="modal-header">
+             <h3>Remove Duplicate</h3>
+           </div>
+           <div className="modal-content">
+             <p>Move this duplicate pack to the Recycle Bin?</p>
+             <p style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 12, wordBreak: 'break-all' }}>
+               {pendingDuplicateDelete}
+             </p>
+           </div>
+           <div className="modal-actions">
+             <button className="btn" onClick={() => setPendingDuplicateDelete(null)}>Cancel</button>
+             <button className="btn btn-danger" onClick={() => void confirmRemoveDuplicate()}>Remove</button>
            </div>
          </div>
        </div>

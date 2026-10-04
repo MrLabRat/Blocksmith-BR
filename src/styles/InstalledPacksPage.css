@@ -606,6 +606,35 @@
 .pack-grid-card:hover .pack-grid-del { opacity: 1; }
 .pack-grid-del:hover { background-color: rgba(180, 30, 30, 0.85); }
 
+.pack-grid-select {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
+  background-color: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  padding: 2px 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pack-grid-card.selected {
+  outline: 2px solid var(--primary-color);
+  outline-offset: -2px;
+}
+
+.installed-pack-checkbox {
+  margin-right: 8px;
+  flex-shrink: 0;
+  accent-color: var(--primary-color);
+}
+
+.installed-pack-card.selected {
+  border-color: var(--primary-color);
+  background-color: color-mix(in srgb, var(--primary-color) 12%, transparent);
+}
+
 /* Child count badge */
 .pack-grid-badge {
   position: absolute;

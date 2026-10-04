@@ -16,6 +16,7 @@ const pathConfigs: { key: keyof SettingsType; label: string; packType: PackType 
   { key: 'behavior_pack_path', label: 'Behavior Packs', packType: 'BehaviorPack' },
   { key: 'resource_pack_path', label: 'Resource Packs', packType: 'ResourcePack' },
   { key: 'skin_pack_path', label: 'Skin Packs', packType: 'SkinPack' },
+  { key: 'skin_pack_4d_path', label: '4D Skin Packs', packType: 'SkinPack4D' },
   { key: 'world_template_path', label: 'World Templates', packType: 'WorldTemplate' },
 ];
 
@@ -186,6 +187,7 @@ export function Settings({ settings, onSettingsChange, isOpen, onClose, onError 
         behavior_pack_path: detected.behavior_pack_path ?? draft.behavior_pack_path,
         resource_pack_path: detected.resource_pack_path ?? draft.resource_pack_path,
         skin_pack_path: detected.skin_pack_path ?? draft.skin_pack_path,
+        skin_pack_4d_path: detected.skin_pack_4d_path ?? draft.skin_pack_4d_path,
         world_template_path: detected.world_template_path ?? draft.world_template_path,
         scan_location: detected.scan_location ?? draft.scan_location,
       });

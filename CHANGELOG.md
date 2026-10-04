@@ -2,6 +2,29 @@
 
 All notable changes to Blocksmith are documented in this file.
 
+## [2.1.0]
+
+### Added
+- Install status filter chips (All / New / Updates / Installed) on the scan list, with updates sorted first.
+- Version labels and Attention badges on pack rows (including child packs).
+- Configurable **4D Skin Packs** destination path in Settings (auto-filled from scan location).
+- **Premium Skin Packs** page to list marketplace premium packs and import extracted 4D skins.
+- Installed Packs multi-select (grid + list), Select All / Clear, and Skin Packs (4D) filter tab.
+- Duplicate removal confirmation dialog.
+- Ctrl+Z keyboard shortcut for rollback.
+
+### Fixed
+- Archives with `skins.json` no longer hide nested behavior/resource packs in scans.
+- Semver-aware version compare (`1.8` equals `1.8.0`); one-sided versions mark Update.
+- Delete/rename allow packs that only have `skins.json` (no `manifest.json`).
+- Old-pack recycle prefers UUID matches before base-name matching.
+- Path allowlists for archive preview, folder sizes, icons, and MC file listing.
+- Nested archive preview reads are size-capped; subfolder filtering uses component boundaries.
+- UI scale saves are clamped to 50–300%.
+- Successful extracts are removed from the scan list; recycled old paths show in results.
+- Help text no longer claims unsupported `.zip` scanning; tips match real delete/rollback behavior.
+- Launch Minecraft / Delete All failures surface in-app notifications.
+
 ## [2.0.0]
 
 ### Added

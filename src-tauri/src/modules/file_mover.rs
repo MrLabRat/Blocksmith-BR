@@ -6,7 +6,7 @@ use super::recycle_bin::move_to_recycle_bin;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -56,14 +56,54 @@ fn strip_pack_suffix(name: &str) -> String {
     result.trim().to_string()
 }
 
+fn folder_manifest_uuid(folder: &Path) -> Option<String> {
+    let content = fs::read_to_string(folder.join("manifest.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    json.get("header")?
+        .get("uuid")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
 fn find_old_pack_paths(
     dest_base: &PathBuf,
     pack_name: &str,
     pack_type: PackType,
+    pack_uuid: Option<&str>,
 ) -> Vec<PathBuf> {
     let mut matches = Vec::new();
     if !dest_base.exists() {
         return matches;
+    }
+
+    let type_suffix = canonical_type_suffix(pack_type);
+    let expected_name = sanitize_filename_component(&format!(
+        "{}{}",
+        strip_pack_suffix(pack_name),
+        type_suffix
+    ));
+
+    if let Some(uuid) = pack_uuid.filter(|u| !u.is_empty()) {
+        if let Ok(entries) = fs::read_dir(dest_base) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if !entry_path.is_dir() {
+                    continue;
+                }
+                let Some(folder_name) = entry_path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                if folder_name == expected_name {
+                    continue;
+                }
+                if folder_manifest_uuid(&entry_path).as_deref() == Some(uuid) {
+                    matches.push(entry_path);
+                }
+            }
+        }
+        if !matches.is_empty() {
+            return matches;
+        }
     }
 
     // Use the same version-aware base-name normalization as update detection
@@ -79,17 +119,8 @@ fn find_old_pack_paths(
                 if let Some(folder_name) = entry_path.file_name().and_then(|n| n.to_str()) {
                     let folder_base = crate::extract_base_name(folder_name);
 
-                    if folder_base == base_name {
-                        let type_suffix = canonical_type_suffix(pack_type);
-
-                        let expected_name = sanitize_filename_component(&format!(
-                            "{}{}",
-                            strip_pack_suffix(pack_name),
-                            type_suffix
-                        ));
-                        if folder_name != expected_name {
-                            matches.push(entry_path);
-                        }
+                    if folder_base == base_name && folder_name != expected_name {
+                        matches.push(entry_path);
                     }
                 }
             }
@@ -202,7 +233,12 @@ impl FileMover {
             && pack.is_update.unwrap_or(false)
             && self.settings.delete_old_on_update.unwrap_or(true)
         {
-            find_old_pack_paths(&dest_base, &pack.name, pack.pack_type)
+            find_old_pack_paths(
+                &dest_base,
+                &pack.name,
+                pack.pack_type,
+                pack.uuid.as_deref(),
+            )
         } else {
             Vec::new()
         };
@@ -220,7 +256,14 @@ impl FileMover {
             self.settings
                 .skin_pack_path
                 .as_ref()
-                .map(|sp| find_old_pack_paths(&PathBuf::from(sp), &pack.name, PackType::SkinPack))
+                .map(|sp| {
+                    find_old_pack_paths(
+                        &PathBuf::from(sp),
+                        &pack.name,
+                        PackType::SkinPack,
+                        pack.uuid.as_deref(),
+                    )
+                })
                 .unwrap_or_default()
         } else {
             Vec::new()

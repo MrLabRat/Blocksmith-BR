@@ -984,6 +984,41 @@ button, input, select, textarea {
   border: 1px solid rgba(30, 100, 150, 0.4);
 }
 
+.pack-status-badge.attention {
+  background-color: rgba(120, 80, 20, 0.35);
+  color: #e0b050;
+  border: 1px solid rgba(150, 100, 30, 0.45);
+}
+
+.status-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.status-filter-chip {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border-color, rgba(80, 30, 30, 0.4));
+  background: rgba(30, 12, 12, 0.45);
+  color: var(--text-secondary);
+  border-radius: var(--border-radius);
+  cursor: pointer;
+}
+
+.status-filter-chip.active {
+  background: var(--primary-color);
+  color: var(--text-primary);
+  border-color: var(--primary-hover);
+}
+
+.result-dest.recycled-old {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .pack-group-children {
   margin-left: 20px;
   padding-left: 12px;
@@ -2020,6 +2055,9 @@ button, input, select, textarea {
 .pack-type-filter {
   padding: 12px 16px;
   border-bottom: 1px solid rgba(60, 20, 20, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 0;
 }
 
 .pack-type-dropdown {

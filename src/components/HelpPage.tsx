@@ -31,7 +31,7 @@ export function HelpPage({ onClose }: HelpPageProps) {
               Blocksmith is a Minecraft Bedrock pack manager that helps you organize, move, and manage your 
               Behavior Packs, Resource Packs, Skin Packs, and World Templates. It automatically detects 
               your Minecraft Bedrock installation and provides an easy interface to import new packs from 
-              .mcaddon, .mcpack, or .zip files.
+              .mcaddon, .mcpack, or .mctemplate files.
             </p>
           </div>
 
@@ -115,7 +115,7 @@ export function HelpPage({ onClose }: HelpPageProps) {
               <details className="faq-item">
                 <summary>What file formats are supported?</summary>
                 <p>
-                  Blocksmith supports .mcaddon, .mcpack, and .zip files. These are automatically scanned 
+                  Blocksmith supports .mcaddon, .mcpack, and .mctemplate files. These are automatically scanned 
                   and organized by pack type.
                 </p>
               </details>
