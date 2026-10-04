@@ -13,7 +13,7 @@ use zip::ZipArchive;
 // zip-bomb/decompression-DoS style archives is the uncompressed size limits below, not the
 // raw entry count, so this ceiling is kept generous to avoid silently dropping real packs.
 const MAX_ARCHIVE_ENTRIES: usize = 100_000;
-const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ICON_BYTES: usize = 8 * 1024 * 1024;
 
@@ -188,7 +188,7 @@ pub fn scan_single_pack(file_path: &Path) -> Vec<PackInfo> {
         }
     }
 
-    if has_skins_json {
+    let skin_pack_info = if has_skins_json {
         let is_4d = check_4d_in_archive(&mut archive);
         let pack_type = if is_4d {
             PackType::SkinPack4D
@@ -204,9 +204,9 @@ pub fn scan_single_pack(file_path: &Path) -> Vec<PackInfo> {
 
         let icon = extract_icon_from_archive(&mut archive, "");
 
-        return vec![PackInfo {
+        Some(PackInfo {
             path: file_path.to_string_lossy().to_string(),
-            name: cleaned_name,
+            name: cleaned_name.clone(),
             pack_type,
             uuid: None,
             version: None,
@@ -221,13 +221,24 @@ pub fn scan_single_pack(file_path: &Path) -> Vec<PackInfo> {
             is_installed: None,
             is_update: None,
             installed_version: None,
-        }];
-    }
+        })
+    } else {
+        None
+    };
 
     let subfolders = detect_subfolders(&mut archive);
 
     if !subfolders.is_empty() {
-        return process_multi_pack_archive(file_path, &mut archive, &subfolders);
+        let mut packs = process_multi_pack_archive(file_path, &mut archive, &subfolders);
+        if let Some(skin) = skin_pack_info {
+            let already_has_skin = packs.iter().any(|p| {
+                matches!(p.pack_type, PackType::SkinPack | PackType::SkinPack4D)
+            });
+            if !already_has_skin {
+                packs.insert(0, skin);
+            }
+        }
+        return packs;
     }
 
     // Some .mcaddon files bundle their BP/RP as nested .mcpack zip entries instead of
@@ -235,7 +246,20 @@ pub fn scan_single_pack(file_path: &Path) -> Vec<PackInfo> {
     // root) — no manifest.json is directly visible until we open each nested archive.
     let nested_mcpacks = detect_nested_mcpack_entries(&mut archive);
     if !nested_mcpacks.is_empty() {
-        return process_nested_mcpack_archive(file_path, &mut archive, &nested_mcpacks);
+        let mut packs = process_nested_mcpack_archive(file_path, &mut archive, &nested_mcpacks);
+        if let Some(skin) = skin_pack_info {
+            let already_has_skin = packs.iter().any(|p| {
+                matches!(p.pack_type, PackType::SkinPack | PackType::SkinPack4D)
+            });
+            if !already_has_skin {
+                packs.insert(0, skin);
+            }
+        }
+        return packs;
+    }
+
+    if let Some(skin) = skin_pack_info {
+        return vec![skin];
     }
 
     let (pack_type, uuid, version) = get_pack_info_from_archive(&mut archive);
@@ -1221,7 +1245,7 @@ fn open_extract_source(
 /// Returns the archive entry path relative to `subfolder`, or `None` if the entry
 /// does not belong under that subfolder. Requires a path-component boundary so that
 /// a subfolder named `ppack0` does not incorrectly match `ppack01/...`.
-fn relative_path_under_subfolder<'a>(name: &'a str, subfolder: &str) -> Option<&'a str> {
+pub fn relative_path_under_subfolder<'a>(name: &'a str, subfolder: &str) -> Option<&'a str> {
     let prefix = format!("{}/", subfolder);
     if let Some(rest) = name.strip_prefix(prefix.as_str()) {
         Some(rest)
@@ -1700,5 +1724,43 @@ mod tests {
             relative_path_under_subfolder("ppack0_extra/file.txt", "ppack0"),
             None
         );
+    }
+
+    #[test]
+    fn skins_json_does_not_hide_nested_behavior_packs() {
+        let nested = build_test_zip(&[(
+            "manifest.json",
+            br#"{"format_version":2,"header":{"name":"Nested BP","uuid":"11111111-1111-1111-1111-111111111111","version":[1,0,0]},"modules":[{"type":"data","uuid":"22222222-2222-2222-2222-222222222222","version":[1,0,0]}]}"#,
+        )]);
+        let outer = build_test_zip(&[
+            ("skins.json", br#"{"skins":[]}"#),
+            ("nested_bp.mcpack", nested.as_slice()),
+        ]);
+
+        let dir = std::env::temp_dir().join(format!(
+            "blocksmith-skin-nested-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("combo.mcaddon");
+        std::fs::write(&path, outer).unwrap();
+
+        let packs = super::scan_single_pack(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            packs
+                .iter()
+                .any(|p| matches!(p.pack_type, PackType::SkinPack | PackType::SkinPack4D)),
+            "expected a skin pack, got {:?}",
+            packs.iter().map(|p| p.pack_type).collect::<Vec<_>>()
+        );
+        assert!(
+            packs.iter().any(|p| p.pack_type == PackType::BehaviorPack),
+            "expected nested behavior pack, got {:?}",
+            packs.iter().map(|p| p.pack_type).collect::<Vec<_>>()
+        );
+        assert!(packs.len() >= 2);
     }
 }

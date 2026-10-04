@@ -387,7 +387,7 @@ async fn compute_pack_status(
 
                 match (new_ver.clone(), old_ver.clone()) {
                     (Some(new_version), Some(old_version)) => {
-                        if new_version == old_version {
+                        if versions_equal(&new_version, &old_version) {
                             pack.is_installed = Some(true);
                             pack.installed_version = Some(old_version);
                         } else {
@@ -398,6 +398,7 @@ async fn compute_pack_status(
                     }
                     (Some(_), None) | (None, Some(_)) => {
                         pack.is_installed = Some(true);
+                        pack.is_update = Some(true);
                         pack.installed_version = old_ver.clone();
                     }
                     (None, None) => {
@@ -707,9 +708,10 @@ fn validate_settings(settings: &Settings) -> Result<(), String> {
 
 #[tauri::command]
 fn save_ui_scale(scale: u32, app: AppHandle) -> Result<(), String> {
+    let clamped = scale.clamp(50, 300);
     let state = app.state::<AppState>();
     let mut settings = state.settings.read().clone();
-    settings.ui_scale = Some(scale);
+    settings.ui_scale = Some(clamped);
     *state.settings.write() = settings.clone();
     save_settings_to_file(&settings)
 }
@@ -953,6 +955,16 @@ fn auto_detect_paths(app: AppHandle) -> Settings {
     }
     if detected.scan_location.is_some() {
         current.scan_location = detected.scan_location;
+    }
+    if current.skin_pack_4d_path.is_none() {
+        if let Some(scan) = current.scan_location.as_ref() {
+            current.skin_pack_4d_path = Some(
+                std::path::Path::new(scan)
+                    .join("4D Skin Packs")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+        }
     }
     *state.settings.write() = current.clone();
     current
@@ -1413,10 +1425,13 @@ fn stop_watching_scan_folder(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_mc_files_in_dir(directory: String) -> Result<Vec<String>, String> {
+fn list_mc_files_in_dir(directory: String, app: AppHandle) -> Result<Vec<String>, String> {
     let dir = std::path::Path::new(&directory);
     if !dir.exists() {
         return Err(format!("Directory does not exist: {}", directory));
+    }
+    if !is_path_readable_for_app(dir, &app) {
+        return Err("Directory is outside configured folders".to_string());
     }
     let files: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| e.to_string())?
@@ -1442,6 +1457,7 @@ fn list_archive_files(
     path: String,
     subfolder: Option<String>,
     nested_mcpack: Option<String>,
+    app: AppHandle,
 ) -> Result<Vec<String>, String> {
     use std::io::Read;
 
@@ -1458,18 +1474,38 @@ fn list_archive_files(
         Ok((name, is_symlink))
     }
 
+    let archive_path = std::path::Path::new(&path);
+    if !is_path_readable_for_app(archive_path, &app) {
+        return Err("Archive is outside configured folders".to_string());
+    }
+
     let file = std::fs::File::open(&path).map_err(|e| format!("Failed to open archive: {}", e))?;
     let mut outer_archive =
         ZipArchive::new(file).map_err(|e| format!("Failed to read archive: {}", e))?;
 
     let mut nested_archive = match &nested_mcpack {
         Some(entry_name) => {
-            let mut bytes = Vec::new();
-            outer_archive
+            let mut entry = outer_archive
                 .by_name(entry_name)
-                .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?
+                .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?;
+            if entry.size() > modules::pack_detector::MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+                return Err(format!(
+                    "Nested pack '{}' exceeds the size limit",
+                    entry_name
+                ));
+            }
+            let mut bytes = Vec::new();
+            let mut limited = (&mut entry)
+                .take(modules::pack_detector::MAX_ARCHIVE_UNCOMPRESSED_BYTES.saturating_add(1));
+            limited
                 .read_to_end(&mut bytes)
                 .map_err(|e| format!("Failed to read nested pack '{}': {}", entry_name, e))?;
+            if bytes.len() as u64 > modules::pack_detector::MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+                return Err(format!(
+                    "Nested pack '{}' exceeded the size limit while reading",
+                    entry_name
+                ));
+            }
             Some(
                 ZipArchive::new(std::io::Cursor::new(bytes))
                     .map_err(|e| format!("Failed to read nested pack archive: {}", e))?,
@@ -1496,16 +1532,15 @@ fn list_archive_files(
         }
 
         let relative = if nested_archive.is_some() {
-            name
+            Some(name)
         } else if let Some(ref sf) = subfolder {
-            let prefix = format!("{}/", sf);
-            if name.starts_with(&prefix) {
-                name[prefix.len()..].to_string()
-            } else {
-                continue;
-            }
+            modules::pack_detector::relative_path_under_subfolder(&name, sf).map(|r| r.to_string())
         } else {
-            name
+            Some(name)
+        };
+
+        let Some(relative) = relative else {
+            continue;
         };
 
         let relative = relative.trim_start_matches('/').to_string();
@@ -2404,6 +2439,32 @@ fn extract_base_name(name: &str) -> String {
     cleaned.trim().to_string()
 }
 
+fn normalize_version_parts(version: &str) -> Vec<u64> {
+    let trimmed = version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .trim_start_matches('.');
+    let mut parts: Vec<u64> = trimmed
+        .split('.')
+        .filter_map(|part| {
+            let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if digits.is_empty() {
+                None
+            } else {
+                digits.parse().ok()
+            }
+        })
+        .collect();
+    while parts.last() == Some(&0) {
+        parts.pop();
+    }
+    parts
+}
+
+fn versions_equal(a: &str, b: &str) -> bool {
+    normalize_version_parts(a) == normalize_version_parts(b)
+}
+
 fn extract_version_from_name(name: &str) -> Option<String> {
     let name_lower = name.to_lowercase();
 
@@ -2707,7 +2768,11 @@ fn rename_installed_packs(renames: Vec<PackRenameRequest>, app: AppHandle) -> Ve
 }
 
 #[tauri::command]
-async fn get_all_folder_sizes(paths: Vec<String>) -> Result<Vec<(String, u64, String)>, String> {
+async fn get_all_folder_sizes(
+    paths: Vec<String>,
+    app: AppHandle,
+) -> Result<Vec<(String, u64, String)>, String> {
+    let allowed_roots = readable_path_roots(&app);
     let results: Vec<(String, u64, String)> =
         tokio::task::spawn_blocking(move || -> Result<Vec<(String, u64, String)>, String> {
             use rayon::prelude::*;
@@ -2717,13 +2782,15 @@ async fn get_all_folder_sizes(paths: Vec<String>) -> Result<Vec<(String, u64, St
                     .into_par_iter()
                     .filter_map(|path| {
                         let folder_path = std::path::Path::new(&path);
-                        if folder_path.exists() && folder_path.is_dir() {
-                            let size = calculate_folder_size(folder_path);
-                            let formatted = format_bytes(size);
-                            Some((path, size, formatted))
-                        } else {
-                            None
+                        if !folder_path.exists() || !folder_path.is_dir() {
+                            return None;
                         }
+                        if !is_under_any_root(folder_path, &allowed_roots) {
+                            return None;
+                        }
+                        let size = calculate_folder_size(folder_path);
+                        let formatted = format_bytes(size);
+                        Some((path, size, formatted))
                     })
                     .collect()
             }))
@@ -2735,7 +2802,7 @@ async fn get_all_folder_sizes(paths: Vec<String>) -> Result<Vec<(String, u64, St
 }
 
 #[tauri::command]
-fn get_folder_size(path: String) -> Result<(u64, String), String> {
+fn get_folder_size(path: String, app: AppHandle) -> Result<(u64, String), String> {
     let folder_path = std::path::Path::new(&path);
     if !folder_path.exists() || !folder_path.is_dir() {
         return Err(format!(
@@ -2743,10 +2810,52 @@ fn get_folder_size(path: String) -> Result<(u64, String), String> {
             path
         ));
     }
+    if !is_path_readable_for_app(folder_path, &app) {
+        return Err("Path is outside configured folders".to_string());
+    }
 
     let size = calculate_folder_size(folder_path);
     let formatted = format_bytes(size);
     Ok((size, formatted))
+}
+
+fn readable_path_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let state = app.state::<AppState>();
+    let settings = state.settings.read();
+    let mut roots: Vec<PathBuf> = [
+        settings.behavior_pack_path.as_ref(),
+        settings.resource_pack_path.as_ref(),
+        settings.skin_pack_path.as_ref(),
+        settings.skin_pack_4d_path.as_ref(),
+        settings.world_template_path.as_ref(),
+        settings.scan_location.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(PathBuf::from)
+    .collect();
+
+    if let Some(scan) = settings.scan_location.as_ref() {
+        roots.push(PathBuf::from(scan).join("4D Skin Packs"));
+    }
+    if let Ok(recycle) = recycle_bin_root() {
+        roots.push(recycle);
+    }
+    roots
+}
+
+fn is_under_any_root(path: &std::path::Path, roots: &[PathBuf]) -> bool {
+    let Ok(canonical_path) = path.canonicalize() else {
+        return false;
+    };
+    roots.iter().any(|root| {
+        root.canonicalize()
+            .is_ok_and(|canonical_root| canonical_path.starts_with(&canonical_root))
+    })
+}
+
+fn is_path_readable_for_app(path: &std::path::Path, app: &AppHandle) -> bool {
+    is_under_any_root(path, &readable_path_roots(app))
 }
 
 fn is_within_configured_dirs(path: &std::path::Path, app: &AppHandle) -> bool {
@@ -2780,7 +2889,9 @@ fn is_direct_managed_pack_directory(path: &std::path::Path, app: &AppHandle) -> 
     let Ok(canonical_path) = path.canonicalize() else {
         return false;
     };
-    if !canonical_path.is_dir() || !canonical_path.join("manifest.json").is_file() {
+    let has_manifest = canonical_path.join("manifest.json").is_file();
+    let has_skins = canonical_path.join("skins.json").is_file();
+    if !canonical_path.is_dir() || (!has_manifest && !has_skins) {
         return false;
     }
     let Some(parent) = canonical_path.parent() else {
@@ -3044,7 +3155,11 @@ fn delete_source_file(path: String, app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_all_pack_icons(paths: Vec<String>) -> Result<Vec<(String, Option<String>)>, String> {
+async fn get_all_pack_icons(
+    paths: Vec<String>,
+    app: AppHandle,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    let allowed_roots = readable_path_roots(&app);
     let results: Vec<(String, Option<String>)> =
         tokio::task::spawn_blocking(move || -> Result<Vec<(String, Option<String>)>, String> {
             use rayon::prelude::*;
@@ -3052,9 +3167,13 @@ async fn get_all_pack_icons(paths: Vec<String>) -> Result<Vec<(String, Option<St
             Ok(pool.install(|| {
                 paths
                     .into_par_iter()
-                    .map(|path| {
-                        let icon = read_pack_icon(std::path::Path::new(&path));
-                        (path, icon)
+                    .filter_map(|path| {
+                        let folder = std::path::Path::new(&path);
+                        if !is_under_any_root(folder, &allowed_roots) {
+                            return None;
+                        }
+                        let icon = read_pack_icon(folder);
+                        Some((path, icon))
                     })
                     .collect()
             }))
@@ -3066,9 +3185,12 @@ async fn get_all_pack_icons(paths: Vec<String>) -> Result<Vec<(String, Option<St
 }
 
 #[tauri::command]
-fn get_pack_icon(path: String) -> Option<String> {
+fn get_pack_icon(path: String, app: AppHandle) -> Option<String> {
     let folder_path = std::path::Path::new(&path);
     if !folder_path.exists() || !folder_path.is_dir() {
+        return None;
+    }
+    if !is_path_readable_for_app(folder_path, &app) {
         return None;
     }
 
@@ -3082,10 +3204,13 @@ fn is_debug_mode(app: AppHandle) -> bool {
 }
 
 #[tauri::command]
-fn get_pack_info(path: String) -> Option<(String, String)> {
+fn get_pack_info(path: String, app: AppHandle) -> Option<(String, String)> {
     // Returns (uuid, name) from manifest.json if found
     let folder_path = std::path::Path::new(&path);
     if !folder_path.exists() || !folder_path.is_dir() {
+        return None;
+    }
+    if !is_path_readable_for_app(folder_path, &app) {
         return None;
     }
 
@@ -3585,4 +3710,18 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_version_parts, versions_equal};
+
+    #[test]
+    fn versions_equal_ignores_trailing_zeros_and_prefix() {
+        assert!(versions_equal("1.8", "1.8.0"));
+        assert!(versions_equal("v1.2.0", "1.2"));
+        assert!(versions_equal("V.1.0.1", "1.0.1"));
+        assert!(!versions_equal("1.8", "1.8.1"));
+        assert_eq!(normalize_version_parts("01.2.0"), vec![1, 2]);
+    }
 }

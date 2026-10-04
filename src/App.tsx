@@ -13,6 +13,7 @@ import { StatisticsPage } from './components/StatisticsPage';
 import { InstalledPacksPage } from './components/InstalledPacksPage';
 import { HelpPage } from './components/HelpPage';
 import { RecycleBinPage } from './components/RecycleBinPage';
+import { PremiumCachePage } from './components/PremiumCachePage';
 import { AnimatedBackground } from './components/AnimatedBackground';
 import { Notifications, createNotification } from './components/Notifications';
 import { ConfirmDialog } from './components/ConfirmDialog';
@@ -33,16 +34,16 @@ const friendlyLogMessages = [
 ];
 
 const tipMessages = [
-  "Hold Shift and click the trash icon to delete a pack file from disk.",
+  "Hold Shift and click trash to flip the Delete-on-Remove setting for that click.",
   "Ctrl + mouse wheel adjusts the UI scale.",
   "Use Dry Run to preview pack moves safely.",
-  "4D skin packs are extracted to the 4D Skin Packs folder.",
-  "Update packs are auto-replaced before extraction.",
+  "4D skin packs are extracted to the 4D Skin Packs folder — set a custom path in Settings.",
+  "Update packs are recycled before extraction when Replace Old on Update is enabled.",
   "Right-click any pack to copy its path, UUID, or name.",
   "Press Ctrl+A to select all visible packs at once.",
-  "Press Delete to remove selected packs from the list.",
+  "Press Delete to remove selected packs from the list (or from disk, per Settings).",
   "Press Escape to deselect all packs.",
-  "Use the search bar to filter packs by name, path, or type.",
+  "Filter by New / Updates / Installed to focus the pack list.",
   "The pack type dropdown lets you view only one type at a time.",
   "Behavior packs and resource packs from the same file are grouped together.",
   "Press Ctrl+0 to reset the UI scale to 100%.",
@@ -50,12 +51,11 @@ const tipMessages = [
   "You can scan multiple times — rescanning replaces the current pack list.",
   "Mash-up packs contain a world template, resource pack, and behavior pack.",
   "Check the Statistics page for a breakdown of your pack collection sizes.",
-  "The Installed Packs page lets you browse and delete packs already in Minecraft.",
+  "The Installed Packs page lets you browse, multi-select, and delete packs already in Minecraft.",
   "Dry Run logs show exactly what would happen without touching any files.",
   "Debug Mode in Settings shows detailed logs for troubleshooting.",
   "The 'Delete Source' toggle removes the original .mcpack or .mcaddon after a successful extraction.",
-  "Dry Run mode shows exactly what would happen without touching any files — useful before bulk installs.",
-  "Installed packs can be deleted from the Installed Packs page — hold Shift to skip the confirmation.",
+  "Use Premium Skin Packs in the menu to import extracted 4D skins into marketplace packs.",
   "A .mcaddon file can contain both a behaviour pack and a resource pack — Blocksmith splits them automatically.",
   "World templates bundle their internal packs as a single unit and won't show duplicate BP/RP entries.",
   "The Statistics page breaks down total disk usage by pack type.",
@@ -63,9 +63,10 @@ const tipMessages = [
   "Ctrl+Z rolls back the last extraction if you change your mind.",
   "Mash-up packs are detected by their filename containing 'mashup' or by bundling a WT, RP, and BP together.",
   "Blocksmith detects 4D skin packs automatically by looking for geometry.json inside the archive.",
-  "Version numbers are stripped from pack names when comparing installed versions, so '1.8' and '1.8.1' match correctly.",
+  "Versions like 1.8 and 1.8.0 are treated as equal for install status.",
   "The orange 'Update' badge means Blocksmith found the same pack installed but with a different version.",
 ];
+type InstallStatusFilter = 'all' | 'new' | 'updates' | 'installed';
 
 const packTypes: (PackType | 'All')[] = ['All', 'BehaviorPack', 'ResourcePack', 'SkinPack', 'SkinPack4D', 'WorldTemplate', 'MashupPack'];
 const packTypeLabels: Record<string, string> = {
@@ -123,8 +124,10 @@ function App() {
   const [showInstalledPacks, setShowInstalledPacks] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showRecycleBin, setShowRecycleBin] = useState(false);
+  const [showPremiumCache, setShowPremiumCache] = useState(false);
   const [logPanelOpen, setLogPanelOpen] = useState(true);
   const [selectedPackType, setSelectedPackType] = useState<PackType | 'All'>('All');
+  const [statusFilter, setStatusFilter] = useState<InstallStatusFilter>('all');
   const [packTypeDropdownOpen, setPackTypeDropdownOpen] = useState(false);
   const [copiedPath, setCopiedPath] = useState<string | null>(null);
   const [toolcoinInstalled, setToolcoinInstalled] = useState(false);
@@ -464,8 +467,30 @@ function App() {
         const path = fourDSkinPacks[0].skin_pack_4d_path || fourDSkinPacks[0].destination;
         navigator.clipboard.writeText(path).catch(() => {});
       }
-      if (ops.some((r) => r.success) && packsRef.current.length > 0) {
-        invoke<PackInfo[]>('compute_pack_status', { packs: packsRef.current })
+      const successful = new Set(
+        ops
+          .filter((r) => r.success)
+          .map((r) => `${r.source}::${r.pack_name}::${r.pack_type}`)
+      );
+      if (successful.size > 0) {
+        setPacks((prev) =>
+          prev.filter((p) => !successful.has(`${p.path}::${p.name}::${p.pack_type}`))
+        );
+        setSelectedPacks((prev) => {
+          const next = new Set(prev);
+          for (const pack of packsRef.current) {
+            if (successful.has(`${pack.path}::${pack.name}::${pack.pack_type}`)) {
+              next.delete(getPackKey(pack));
+            }
+          }
+          return next;
+        });
+      }
+      const remaining = packsRef.current.filter(
+        (p) => !successful.has(`${p.path}::${p.name}::${p.pack_type}`)
+      );
+      if (remaining.length > 0) {
+        invoke<PackInfo[]>('compute_pack_status', { packs: remaining })
           .then((updated) => {
             const updatedMap = new Map(updated.map((p) => [getPackKey(p), p]));
             setPacks((prev) => prev.map((p) => updatedMap.get(getPackKey(p)) ?? p));
@@ -531,9 +556,27 @@ function App() {
     try {
       await invoke('launch_minecraft');
     } catch (error) {
-      console.error('Failed to launch Minecraft:', error);
+      addNotification('error', 'Minecraft Launch Failed', `${error}`);
     }
   };
+
+  const handleRollbackShortcut = useCallback(async () => {
+    if (isMovingRef.current || isScanningRef.current) return;
+    try {
+      const result = await invoke<MoveOperation | null>('rollback_last');
+      if (result) {
+        addNotification(
+          'success',
+          'Rollback Complete',
+          `Removed "${result.pack_name}" from ${result.destination}`
+        );
+      } else {
+        addNotification('info', 'Nothing to Rollback', 'No previous extraction is available to undo.');
+      }
+    } catch (error) {
+      addNotification('error', 'Rollback Failed', `${error}`);
+    }
+  }, [addNotification]);
 
   const handleLaunchToolCoin = async () => {
     try {
@@ -549,8 +592,9 @@ function App() {
       await invoke('delete_all_packs');
       setPacks([]);
       setSelectedPacks(new Set());
+      addNotification('success', 'Packs Recycled', 'All configured packs were moved to the Recycle Bin.');
     } catch (error) {
-      console.error('Failed to delete all packs:', error);
+      addNotification('error', 'Delete All Failed', `${error}`);
     }
   };
 
@@ -560,16 +604,27 @@ function App() {
   };
 
   // Filtering logic
-  const filteredPacks = useMemo(() => packs.filter((pack) => {
-    const matchesType = selectedPackType === 'All' || pack.pack_type === selectedPackType;
-    const search = searchFilter.toLowerCase();
-    const matchesSearch = (
-      pack.name.toLowerCase().includes(search) ||
-      pack.path.toLowerCase().includes(search) ||
-      pack.pack_type.toLowerCase().includes(search)
-    );
-    return matchesType && matchesSearch;
-  }), [packs, selectedPackType, searchFilter]);
+  const filteredPacks = useMemo(() => {
+    const filtered = packs.filter((pack) => {
+      const matchesType = selectedPackType === 'All' || pack.pack_type === selectedPackType;
+      const search = searchFilter.toLowerCase();
+      const matchesSearch = (
+        pack.name.toLowerCase().includes(search) ||
+        pack.path.toLowerCase().includes(search) ||
+        pack.pack_type.toLowerCase().includes(search)
+      );
+      const matchesStatus =
+        statusFilter === 'all' ||
+        (statusFilter === 'updates' && !!pack.is_update) ||
+        (statusFilter === 'installed' && !!pack.is_installed && !pack.is_update) ||
+        (statusFilter === 'new' && !pack.is_installed);
+      return matchesType && matchesSearch && matchesStatus;
+    });
+    return filtered.sort((a, b) => {
+      const rank = (p: PackInfo) => (p.is_update ? 0 : p.is_installed ? 2 : 1);
+      return rank(a) - rank(b) || a.name.localeCompare(b.name);
+    });
+  }, [packs, selectedPackType, searchFilter, statusFilter]);
 
   // Export pack list
   const exportPacksCSV = useCallback(async () => {
@@ -637,6 +692,9 @@ function App() {
       } else if (e.ctrlKey && e.key === 'a') {
         e.preventDefault();
         handleSelectAll();
+      } else if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        void handleRollbackShortcut();
       } else if (e.key === 'Escape') {
         e.preventDefault();
         handleDeselectAll();
@@ -662,7 +720,7 @@ function App() {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('wheel', handleWheel);
     };
-  }, [adjustScale, resetScale, handleSelectAll, handleDeselectAll, removeSelectedPacks]);
+  }, [adjustScale, resetScale, handleSelectAll, handleDeselectAll, removeSelectedPacks, handleRollbackShortcut]);
 
   // Keep packsRef in sync for use inside interval callbacks
   useEffect(() => { packsRef.current = packs; }, [packs]);
@@ -866,6 +924,7 @@ function App() {
               onShowInstalledPacks={() => setShowInstalledPacks(true)}
               onShowHelp={() => setShowHelp(true)}
               onShowRecycleBin={() => setShowRecycleBin(true)}
+              onShowPremiumCache={() => setShowPremiumCache(true)}
             />
           </div>
           <div className="window-controls">
@@ -939,6 +998,22 @@ function App() {
                     ))}
                   </div>
                 )}
+              </div>
+              <div className="status-filter-chips">
+                {([
+                  ['all', 'All'],
+                  ['new', 'New'],
+                  ['updates', 'Updates'],
+                  ['installed', 'Installed'],
+                ] as const).map(([value, label]) => (
+                  <button
+                    key={value}
+                    className={`status-filter-chip ${statusFilter === value ? 'active' : ''}`}
+                    onClick={() => setStatusFilter(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -1152,7 +1227,14 @@ function App() {
                         )}
                       </div>
                       {result.success ? (
-                        <div className="result-dest">{result.destination}</div>
+                        <>
+                          <div className="result-dest">{result.destination}</div>
+                          {result.deleted_old_path && (
+                            <div className="result-dest recycled-old">
+                              Old version recycled: {result.deleted_old_path}
+                            </div>
+                          )}
+                        </>
                       ) : (
                         <div className="result-error">{result.error}</div>
                       )}
@@ -1199,6 +1281,13 @@ function App() {
 
       {/* Recycle Bin Modal */}
       {showRecycleBin && <RecycleBinPage onClose={() => setShowRecycleBin(false)} addNotification={addNotification} />}
+      {showPremiumCache && (
+        <PremiumCachePage
+          onClose={() => setShowPremiumCache(false)}
+          addNotification={addNotification}
+          scanLocation={settings.scan_location}
+        />
+      )}
 
       {/* Confirm Dialog */}
       {confirmState && (

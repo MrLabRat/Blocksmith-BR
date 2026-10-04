@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Menu, X, HelpCircle, Info, RotateCcw, Trash2, Package, Recycle } from 'lucide-react';
+import { Menu, X, HelpCircle, Info, RotateCcw, Trash2, Package, Recycle, Sparkles } from 'lucide-react';
 import '../styles/HamburgerMenu.css';
 
 interface HamburgerMenuProps {
@@ -9,9 +9,10 @@ interface HamburgerMenuProps {
   onShowInstalledPacks: () => void;
   onShowHelp: () => void;
   onShowRecycleBin: () => void;
+  onShowPremiumCache: () => void;
 }
 
-export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShowInstalledPacks, onShowHelp, onShowRecycleBin }: HamburgerMenuProps) {
+export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShowInstalledPacks, onShowHelp, onShowRecycleBin, onShowPremiumCache }: HamburgerMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
@@ -50,6 +51,11 @@ export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShow
     onShowRecycleBin();
   };
 
+  const handleShowPremiumCache = () => {
+    setIsOpen(false);
+    onShowPremiumCache();
+  };
+
   return (
     <div className="hamburger-menu">
       <button 
@@ -79,6 +85,10 @@ export function HamburgerMenu({ onDeleteAllPacks, onRestart, onShowStats, onShow
             <button className="menu-item" onClick={handleShowRecycleBin}>
               <Recycle size={18} />
               <span>Recycle Bin</span>
+            </button>
+            <button className="menu-item" onClick={handleShowPremiumCache}>
+              <Sparkles size={18} />
+              <span>Premium Skin Packs</span>
             </button>
             <button className="menu-item" onClick={handleRestart}>
               <RotateCcw size={18} />
